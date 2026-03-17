@@ -15,7 +15,7 @@
 - **Task**: Single-image → 1-object mesh
 - **GT**: Point clouds (10K points per object, from `pc10K.npz`)
 - **Input**: Blend renders (PNG, converted to RGBA for all models)
-- **Subset**: Defined in `datasets/Toys4k/subset.csv` (10 objects, 10 categories)
+- **Subset**: Defined per experiment (e.g. `experiments/toys4k_baseline/manifest.csv`, 10 objects, 10 categories)
 
 ## Seed Control
 

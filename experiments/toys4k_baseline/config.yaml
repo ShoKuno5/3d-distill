@@ -5,7 +5,7 @@
 dataset:
   name: toys4k
   root: /mnt/workspace/kuno/distillation/datasets/Toys4k
-  manifest: /mnt/workspace/kuno/distillation/datasets/Toys4k/subset.csv
+  manifest: /mnt/workspace/kuno/distillation/datasets/Toys4k/compat/subset.csv
   # Subset control: set max_samples to limit, or provide sample_ids_file
   max_samples: null        # e.g. 20
   sample_ids_file: null    # e.g. /path/to/ids.txt (one id per line)

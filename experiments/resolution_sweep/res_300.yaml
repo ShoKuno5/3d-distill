@@ -6,7 +6,7 @@
 dataset:
   name: toys4k
   root: /mnt/workspace/kuno/distillation/datasets/Toys4k
-  manifest: /mnt/workspace/kuno/distillation/datasets/Toys4k/subset_blend300.csv
+  manifest: /mnt/workspace/kuno/distillation/datasets/Toys4k/compat/subset_blend300.csv
   max_samples: null
   sample_ids_file: null
   category_filter: null

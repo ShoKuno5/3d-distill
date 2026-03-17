@@ -41,10 +41,15 @@ def main():
                         help="TRELLIS.2 pipeline type (overrides config)")
     parser.add_argument("--gpu", type=int, default=None,
                         help="GPU device index")
+    parser.add_argument("--sample-ids", type=str, default=None,
+                        help="Path to sample IDs file (overrides config sample_ids_file)")
     args = parser.parse_args()
 
     with open(args.config) as f:
         cfg = yaml.safe_load(f)
+
+    if args.sample_ids:
+        cfg["dataset"]["sample_ids_file"] = args.sample_ids
 
     samples = load_and_filter_samples(cfg, max_samples_override=args.max_samples)
 

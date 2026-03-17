@@ -9,7 +9,12 @@ Key docs: `docs/architecture_survey.md`, `docs/experiment_plan.md`
 ```
 distillation/
 ├── models/             # Git repos: trellis, trellis2, hunyuan3d, hunyuan3d21, sam3d
-├── datasets/           # Toys4k input images + GT point clouds
+├── datasets/
+│   └── Toys4k/
+│       ├── official/   # Unmodified files from official distribution (blend, obj, point clouds, sample renders)
+│       ├── renders/    # Locally generated renders: renders/<res>/<category>/<oid>/{image,depth,segmentation}.png
+│       ├── zips/       # Original zip archives
+│       └── compat/     # Symlinks preserving legacy paths for past experiments
 ├── pipeline/           # Evaluation infrastructure: scripts/, src/, docs/
 ├── experiments/        # Per-experiment config + run.sh + README (copy _template/ to create new)
 ├── results/            # Predictions, metrics, reports
@@ -20,7 +25,21 @@ distillation/
 
 ## Running Experiments
 
-Each experiment runs via `experiments/<name>/run.sh`:
+Each experiment lives on its own branch and runs via `experiments/<name>/run.sh`:
+
+```bash
+git checkout exp/category-pilot                          # Switch to experiment branch
+bash experiments/category_pilot/run.sh                   # Run the experiment
+```
+
+### Branch Convention
+
+- `main` — stable shared infrastructure (pipeline, docs, dataset layout)
+- `exp/<name>` — one branch per experiment (e.g. `exp/category-pilot`, `exp/resolution-sweep`)
+
+Experiment branches diverge from `main` and contain the experiment directory (`experiments/<name>/`) plus any experiment-specific pipeline changes. Merge infrastructure improvements back to `main`; keep experiment-specific code on the branch.
+
+### Past Experiments
 
 ```bash
 bash experiments/toys4k_baseline/run.sh                  # 4-model baseline comparison
@@ -46,6 +65,7 @@ cd models/sam3d       && CONDA_PREFIX=../../envs/sam3d-mamba/envs/sam3d-objects 
 - Never fabricate weights URLs or dataset links — only cite what exists in the repo.
 - If something is unclear, write "Unknown" rather than guessing.
 - Do not share conda/venv environments between repos (version conflicts).
-- **Do not edit past experiments**: Existing experiments in `experiments/` (configs, READMEs) are records. Create a new experiment directory to change conditions.
+- **Do not edit past experiments**: Existing experiments in `experiments/` are records. Create a new experiment directory to change conditions. (Path-only updates for dataset reorganization are allowed.)
+- **Dataset paths**: New experiments reference `datasets/Toys4k/official/` and `datasets/Toys4k/renders/` directly. Past experiments use `datasets/Toys4k/compat/` symlinks.
 - **Active models**: New experiments use trellis2 and hunyuan3d21 only. Others may be re-added later.
 - **Comments in English**: All comments, docstrings, and documentation should be written in English.
