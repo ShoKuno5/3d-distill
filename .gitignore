@@ -1,0 +1,22 @@
+# Bulk data — never track
+datasets/
+envs/
+results/
+archive/
+
+# Model repos (have their own .git)
+models/
+
+# Python / OS artifacts
+__pycache__/
+*.pyc
+*.egg-info/
+*.so
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+
+# Claude Code working files
+.claude/
