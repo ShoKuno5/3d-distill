@@ -134,8 +134,18 @@ bg.inputs['Color'].default_value = (1, 1, 1, 1)
 
 # --- Render settings ---
 scene.render.engine = 'CYCLES'
-scene.cycles.device = 'CPU'
 scene.cycles.samples = 64
+
+# GPU rendering (CUDA)
+prefs = bpy.context.preferences.addons.get("cycles")
+if prefs:
+    prefs.preferences.compute_device_type = "CUDA"
+    prefs.preferences.get_devices()
+    for device in prefs.preferences.devices:
+        device.use = (device.type != "CPU")
+    scene.cycles.device = "GPU"
+else:
+    scene.cycles.device = 'CPU'
 scene.render.resolution_x = args.resolution
 scene.render.resolution_y = args.resolution
 scene.render.resolution_percentage = 100

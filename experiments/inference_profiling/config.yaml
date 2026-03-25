@@ -1,0 +1,32 @@
+# Experiment: Block-level Inference Time Profiling
+# ================================================
+# Measures wall-clock time per pipeline block for trellis2 and hunyuan3d21.
+# No evaluation — profiling only.
+
+dataset:
+  name: Toys4k
+  root: /mnt/workspace/kuno/distillation/datasets/Toys4k
+  manifest: /mnt/workspace/kuno/distillation/experiments/inference_profiling/manifest.csv
+  max_samples: null
+  sample_ids_file: null
+  category_filter: null
+
+models:
+  - name: trellis2
+    version: "2.0"
+    predictions_root: /mnt/workspace/kuno/distillation/results/inference_profiling/predictions/trellis2/default
+    mesh_filename: mesh_raw.obj
+    inference_params:
+      pipeline_type: "1024_cascade"
+  - name: hunyuan3d21
+    version: "2.1"
+    predictions_root: /mnt/workspace/kuno/distillation/results/inference_profiling/predictions/hunyuan3d21/default
+    mesh_filename: mesh_raw.obj
+    inference_params:
+      num_inference_steps: 50
+      guidance_scale: 5.0
+      octree_resolution: 384
+
+seeds: [42]
+
+output_root: /mnt/workspace/kuno/distillation/results/inference_profiling

@@ -24,6 +24,20 @@ DEFAULTS = {
         "guidance_scale": 5.0,    # match official demo default (FlowMatching pipeline)
         "octree_resolution": 384,
     },
+    "mdt_dist": {
+        "ss_steps": 2,
+        "slat_steps": 2,
+        "ss_cfg": 5.0,
+        "slat_cfg": 1.0,
+        "ss_cfg_interval": [0.5, 1.0],
+        "slat_cfg_interval": [0.5, 1.0],
+        "rescale_t": 1.0,
+    },
+    "flashvdm": {
+        "num_inference_steps": 5,
+        "octree_resolution": 380,
+        "num_chunks": 200000,
+    },
 }
 
 

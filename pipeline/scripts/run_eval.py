@@ -532,6 +532,43 @@ def main():
     # --- Summary ---
     _write_summary(per_sample_rows, model_names, metrics_dir, cfg, logger)
 
+    # --- Frechet Distance (if configured) ---
+    fd_cfg = cfg.get("metrics", {}).get("frechet_distance", {})
+    if fd_cfg.get("enabled", False):
+        logger.info("Computing Frechet Distance metrics...")
+        try:
+            from src.evaluation.frechet_distance import compute_fd_for_model
+            renders_dir = os.path.join(output_root, "multiview_renders")
+            gt_dir = os.path.join(renders_dir, "gt")
+            fd_models = fd_cfg.get("models", ["inception_v3"])
+            fd_rows = []
+
+            for mcfg in model_cfgs:
+                model_name = mcfg["name"]
+                pred_dir = os.path.join(renders_dir, model_name)
+                if not os.path.isdir(pred_dir):
+                    logger.warning(f"  No renders for {model_name}, skipping FD")
+                    continue
+                for feat_model in fd_models:
+                    try:
+                        fd = compute_fd_for_model(pred_dir, gt_dir, model_name=feat_model)
+                        logger.info(f"  {model_name} FD_{feat_model}: {fd:.4f}")
+                        fd_rows.append({
+                            "model": model_name,
+                            "feature_extractor": feat_model,
+                            "frechet_distance": fd,
+                        })
+                    except Exception as e:
+                        logger.error(f"  FD failed for {model_name}/{feat_model}: {e}")
+
+            if fd_rows:
+                fd_path = os.path.join(metrics_dir, "frechet_distance.csv")
+                _write_csv(fd_path, fd_rows,
+                           ["model", "feature_extractor", "frechet_distance"])
+                logger.info(f"  FD results: {fd_path}")
+        except ImportError as e:
+            logger.warning(f"  FD computation skipped (missing dependency): {e}")
+
     logger.info("Evaluation complete.")
 
 

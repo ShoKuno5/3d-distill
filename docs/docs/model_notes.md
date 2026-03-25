@@ -7,7 +7,8 @@
 | trellis | 1.0 | TRELLIS (Microsoft) | GPU 0 |
 | trellis2 | 2.0 | TRELLIS.2 (Microsoft) | GPU 2 |
 | hunyuan3d | 2.0 | Hunyuan3D (Tencent) | GPU 1 |
-| hunyuan3d21 | 2.1 | Hunyuan3D (Tencent) | GPU 3 |
+| hunyuan3d21 | 2.1 | Hunyuan3D (Tencent) | GPU 3; FlashVDM turbo mode available |
+| mdt_dist | — | MDT-dist (training code only) | Distills trellis v1; inference via trellis |
 
 ---
 
@@ -98,6 +99,36 @@
 SAM-3D-Objects has been removed from the active evaluation pipeline (2026-03-12).
 The model repo and environment remain in `models/sam3d/` and `envs/sam3d-mamba/` for reference.
 Previous predictions are archived in `results/toys4k/predictions/sam3d/`.
+
+## Distilled Variants
+
+### FlashVDM (Hunyuan3D-2.1 Turbo)
+
+- **What**: Distillation of the Hunyuan3D-2 Vecset Diffusion Model (30→5 steps, up to 45× speedup)
+- **Paper**: arXiv:2503.16302 (ICCV 2025 Highlight)
+- **License**: Tencent community license (non-open-source; excludes EU/UK/Korea)
+- **Code**: Already integrated in `models/hunyuan3d21` — no separate repo needed
+- **Usage**: `pipeline.enable_flashvdm()` or `--enable_flashvdm` flag
+- **Effect on defaults**: steps 30→5, octree_resolution 256→128, guidance_scale 7.5→5.0
+- **Weights**: Auto-downloaded via HuggingFace (`tencent/Hunyuan3D-2mini`)
+- **Environment**: Same as hunyuan3d21 (`envs/hunyuan3d-venv/bin/python`)
+- **Status**: Ready to use
+
+### MDT-dist (TRELLIS v1 Distilled)
+
+- **What**: Few-step flow distillation of TRELLIS v1 (25→1-2 steps, 6-9× speedup)
+- **Paper**: arXiv:2509.04406
+- **License**: Apache-2.0
+- **Code**: `models/mdt_dist/` (training code only; inference uses TRELLIS v1 pipeline)
+- **Usage**: Load distilled weights into `models/trellis` pipeline, set `steps=1` or `steps=2`, `cfg_strength=0.1`
+- **Weights**: HuggingFace `Zanwei/mdt-dist` (~4.6 GB total)
+  - `slat_flow_img_dit_L_64l8p2_fp16.pt` (SLAT flow transformer)
+  - `ss_flow_img_dit_L_16l8_fp16.pt` (Sparse Structure flow transformer)
+- **Environment**: Same as trellis v1 (`envs/miniconda3/envs/trellis/bin/python`)
+- **Inference config**: `models/mdt_dist/ckpts/pipeline.json` (both samplers set to 2 steps)
+- **Status**: Weights downloaded to `models/mdt_dist/ckpts/` (~4.4 GB). Training code cloned for reference.
+- **Note**: Distills TRELLIS v1, not v2. Active experiments use trellis2, so this is
+  primarily useful for speed comparisons against the original trellis v1.
 
 ## Common Settings
 
