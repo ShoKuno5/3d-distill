@@ -1,6 +1,7 @@
 # 蒸留アルゴリズム解説
 
-Hunyuan3D-2.1 (Flow Matching DiT, 3.3B params, 50 steps) に対する4つの蒸留手法の解説資料。
+Hunyuan3D-2.1 (Flow Matching DiT, 3.3B params, 50 steps) に対する蒸留手法の解説資料。
+実装対象の4手法 (PD, CD, DMD1, DMD2) に加え、関連手法として MDT-dist を議論する。
 
 ## 目次
 
@@ -10,8 +11,10 @@ Hunyuan3D-2.1 (Flow Matching DiT, 3.3B params, 50 steps) に対する4つの蒸�
 4. [Consistency Distillation (CD)](#2-consistency-distillation-cd)
 5. [Distribution Matching Distillation (DMD1)](#3-distribution-matching-distillation-dmd1)
 6. [DMD2](#4-dmd2)
-7. [Hunyuan3D-2.1 への適応メモ](#hunyuan3d-21-への適応メモ)
-8. [参考文献](#参考文献)
+7. [MDT-dist (参考)](#5-mdt-dist-参考)
+8. [手法間の関係と議論](#手法間の関係と議論)
+9. [Hunyuan3D-2.1 への適応メモ](#hunyuan3d-21-への適応メモ)
+10. [参考文献](#参考文献)
 
 ---
 
@@ -67,6 +70,17 @@ Student の出力分布全体を teacher の出力分布に近づける。
 - **利点**: 1-step 生成に強い、軌道に縛られない
 - **欠点**: 実装が複雑、学習不安定になりやすい
 
+### ハイブリッド (MDT-dist)
+
+Trajectory と Distribution の両方の要素を持つ。
+
+```
+[直感] 速度場の局所的な一致 (VM) と、分布レベルの輸送最適化 (VD) を同時に行う
+```
+
+- **利点**: 3D latent の複雑な構造に対応しやすい
+- **欠点**: 2 つの CFG 強度 (VM用, VD用) のチューニングが必要
+
 ```
             ┌──────────────────────────────────────────────────┐
             │         Trajectory ベース                        │
@@ -79,6 +93,11 @@ Student の出力分布全体を teacher の出力分布に近づける。
             │                                                  │
             │   DMD1: score matching + 回帰                    │
             │   DMD2: score matching + GAN (回帰不要)          │
+            │                                                  │
+            ├──────────────────────────────────────────────────┤
+            │         ハイブリッド                              │
+            │                                                  │
+            │   MDT-dist: velocity matching + velocity distill │
             │                                                  │
             └──────────────────────────────────────────────────┘
 ```
@@ -361,6 +380,152 @@ Loss_G = L_distill + λ_gan · L_gan
 
 ---
 
+## 5. MDT-dist (参考)
+
+**論文**: Zanue et al., "MDT-dist: Marginal-Data Transport for Distilling Diffusion Models" (2025)
+
+> 本実験の実装対象外だが、`models/mdt_dist/` にコードと重みが存在する。
+> TRELLIS v1 の蒸留モデルとして `experiments/distill_comparison/` で評価済み。
+
+### 直感
+
+MDT-dist は「速度場マッチング (VM)」と「速度場蒸留 (VD)」の2つの損失を組み合わせる。
+VM は teacher の速度場を局所的に模倣し (trajectory 的)、VD は student の生成サンプルを teacher の速度場で再評価して分布レベルの誤差を修正する (distribution 的)。
+
+この二重構造が MDT-dist をハイブリッド手法たらしめている:
+- **VM だけ** だと PD/CD に近い軌道模倣になるが、バイアスが残る
+- **VD だけ** だと DMD に近い分布マッチングになるが、勾配推定が不安定
+- **VM + VD** で「安定した勾配 (VM)」と「分布整合性 (VD)」を両立
+
+### 数式
+
+```
+# === Velocity Matching (VM) ===
+# teacher の速度場をターゲットとして student を直接訓練
+# ただし、student 自身の速度変化率 dv/dt を使って補正
+
+x_t = diffuse(x_data, t, noise)
+v_teacher = teacher(x_t, t)                    # CFG 付き (cfg_vm=40)
+
+# discrete 近似: student の速度変化率
+x_prev = euler_step(x_t, v_teacher, interval)  # teacher で 1-step 戻す
+v_prev = student(x_prev, t - interval)
+dv_dt = (v_student(x_t, t) - v_prev) / interval
+
+# 正規化 (安定化)
+dv_dt = dv_dt / (||dv_dt|| + 0.1)
+
+# ターゲット: teacher 速度 - t * 速度変化率
+v_target_vm = v_teacher - t · dv_dt
+L_vm = MSE(v_student, v_target_vm)
+
+# === Velocity Distillation (VD) ===
+# student の 1-step 生成結果を "fake data" として teacher に再評価させる
+
+noise_fake ~ N(0, I)
+v_fake = student(noise_fake, t=1)              # t=1 → 全ノイズから予測
+x_fake = noise_fake - v_fake                   # 1-step 生成結果
+
+# x_fake を新たなデータとして diffuse し、同じ VM ロジックを適用
+# ただし teacher CFG は別値 (cfg_vd=100)
+v_pred_fake, v_target_fake = VM_loss(x_fake, noise, t, cfg=cfg_vd)
+
+# STE (straight-through estimator) で勾配を student に伝播
+L_vd = MSE(v_pred_fake - v_fake + v_fake.detach(),
+           v_target_fake - v_fake + v_fake.detach())
+
+# === 合計損失 ===
+Loss = λ_vm · L_vm + λ_vd · L_vd
+```
+
+### 学習パイプライン
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│ MDT-dist 学習                                                │
+│                                                              │
+│   2 つのモデル:                                               │
+│     - Teacher (frozen, 元のモデル)                           │
+│     - Student (学習対象)                                     │
+│                                                              │
+│   for each step:                                             │
+│     1. 実データ x_data を diffuse → x_t                      │
+│     2. VM 損失: student vs teacher+補正 の速度場一致         │
+│     3. Student 1-step 生成 → x_fake                          │
+│     4. VD 損失: x_fake を新たなデータとして VM を再適用      │
+│     5. L = λ_vm · L_vm + λ_vd · L_vd で student 更新        │
+│                                                              │
+│     ┌────────────┐                                           │
+│     │  Teacher    │ v_teacher (CFG=40 for VM, 100 for VD)    │
+│     │  (frozen)   │◄──────── x_t                             │
+│     └──────┬─────┘                                           │
+│            │ target                                          │
+│            ▼                                                 │
+│     ┌────────────┐    VM loss     ┌───────────────┐          │
+│     │  Student    │──────────────►│ 実データ x_data │         │
+│     │  (学習)     │               └───────────────┘          │
+│     │             │    VD loss     ┌───────────────┐          │
+│     │             │──────────────►│ fake x_fake    │         │
+│     └────────────┘    (1-step生成) └───────────────┘          │
+│                        ↑ STE で勾配伝播                      │
+└──────────────────────────────────────────────────────────────┘
+```
+
+### TRELLIS v1 での実績
+
+- 2段階蒸留: SS flow (構造) + SLAT flow (latent) を個別に蒸留
+- 25-step → 1-2 step (9x 高速化, A800 で 0.68s/sample)
+- `distill_type: "discrete"`, `interval: 0.01`
+- 重み: `models/mdt_dist/ckpts/` に SS/SLAT 各 FP16 チェックポイント
+
+### ポイント
+
+- **DMD との違い**: DMD は fake score network (3つ目のネットワーク) で student 分布のスコアを推定するが、MDT-dist は teacher 自身を再利用して VD 損失を計算する → メモリ効率が良い (2モデルで済む)
+- **PD/CD との違い**: VM 損失だけなら PD に近いが、VD 損失が分布レベルの補正を加える点で本質的に異なる
+- **CFG の二重化**: VM 用 (cfg=40) と VD 用 (cfg=100) で異なる CFG 強度を使う。VD はノイジーな fake data に対して強い CFG が必要
+- **d_norm**: 速度変化率 dv/dt を正規化 (||dv/dt|| + 0.1 で割る) → 勾配爆発を防止
+
+---
+
+## 手法間の関係と議論
+
+### 分類マトリクス
+
+| 手法 | 軌道模倣 | 分布マッチング | 追加ネットワーク | データ事前生成 |
+|------|:--------:|:--------------:|:----------------:|:--------------:|
+| PD | ○ (2→1 step) | × | なし | 不要 |
+| CD | ○ (整合性) | × | なし (EMA) | 不要 |
+| DMD1 | × | ○ (KL via score) | Fake score net | 必要 (回帰対) |
+| DMD2 | × | ○ (KL + GAN) | Fake score + D | 不要 |
+| MDT-dist | ○ (VM) | ○ (VD) | なし | 不要 |
+
+### MDT-dist と他手法の関係
+
+**MDT-dist ≈ "PD の洗練" + "DMD の簡略化"**
+
+1. **VM 損失と PD の関係**:
+   PD は `MSE(student_1step, teacher_2step)` だが、MDT-dist の VM は teacher の速度場にさらに `dv/dt` 補正項を加える。この補正は student の速度場の変化率を考慮し、単純な 2-step ターゲットよりも正確なターゲットを提供する。PD が「teacher の軌道をそのまま圧縮」するのに対し、MDT-dist は「student 自身の動態を考慮した適応的ターゲット」を使う。
+
+2. **VD 損失と DMD の関係**:
+   DMD は fake score network で `∇ log p_student` を推定し、KL 勾配 `∇ log p_student - ∇ log p_teacher` で student を更新する。MDT-dist の VD は student の生成サンプル (fake data) に対して VM と同じ損失を適用する — つまり teacher の速度場を通じて間接的に分布差を測る。DMD が明示的にスコア差を計算するのに対し、MDT-dist は速度場の不一致として分布差を捉える。
+
+3. **メモリ効率**:
+   DMD1/DMD2 は 3-4 コンポーネントを同時にメモリに載せるが、MDT-dist は teacher + student の 2 モデルのみ。VD 損失の計算で student の forward を追加で 1 回行うが、別ネットワークは不要。
+
+### 本実験で MDT-dist を実装対象外とした理由
+
+1. **アーキテクチャ依存性**: MDT-dist は TRELLIS v1 (Sparse Structure + Structured Latent の 2 段階パイプライン) 向けに設計されており、Hunyuan3D-2.1 の単一 DiT latent 空間にそのまま適用する場合のメリットが不明確
+2. **比較の明確さ**: PD/CD (trajectory) vs DMD1/DMD2 (distribution) の軸で比較する方が、手法特性の切り分けが明確。MDT-dist はハイブリッドであるため、どちらの要素が効いているかの分析が難しい
+3. **既存評価**: `experiments/distill_comparison/` で TRELLIS v1 上での MDT-dist 評価は実施済み。再実装より他手法の比較に注力する方が情報量が多い
+
+### 将来の検討事項
+
+- MDT-dist の VM 損失のみを切り出して PD と比較する (dv/dt 補正の効果測定)
+- VD 損失のみを切り出して DMD と比較する (fake score net vs teacher 再評価)
+- Hunyuan3D-2.1 への MDT-dist 移植 (VM + VD の組み合わせが DiT latent で有効か)
+
+---
+
 ## Hunyuan3D-2.1 への適応メモ
 
 ### 共通事項
@@ -404,5 +569,6 @@ Loss_G = L_distill + λ_gan · L_gan
 | CD | Consistency Models | https://arxiv.org/abs/2303.01469 |
 | DMD1 | One-step Diffusion with Distribution Matching Distillation | https://arxiv.org/abs/2311.18828 |
 | DMD2 | Improved Distribution Matching Distillation | https://arxiv.org/abs/2405.14867 |
+| MDT-dist | Marginal-Data Transport for Distilling Diffusion Models | https://arxiv.org/abs/2509.04406 |
 | FlashVDM | FlashVDM: Fast and Efficient 3D Generation | https://arxiv.org/abs/2503.16302 |
 | Flow Matching | Flow Matching for Generative Modeling | https://arxiv.org/abs/2210.02747 |

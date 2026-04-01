@@ -17,6 +17,11 @@ distillation/
 │       └── compat/     # Symlinks preserving legacy paths for past experiments
 ├── pipeline/           # Evaluation infrastructure: scripts/, src/, docs/
 ├── experiments/        # Per-experiment config + run.sh + README (copy _template/ to create new)
+├── distill_methods/    # Distillation experiment (branch: exp/distill-methods-comparison)
+│   ├── config.yaml     # Full experiment config (dataset, training, models, metrics)
+│   ├── manifest.csv    # Sample list for this experiment
+│   ├── src/            # Training code: base_distiller, pd/cd/dmd1/dmd2, train.py
+│   └── scripts/        # Data prep, inference, comparison scripts
 ├── results/            # Predictions, metrics, reports
 ├── envs/               # Runtime environments (not shared across repos)
 ├── docs/               # Project-wide documents
@@ -60,6 +65,33 @@ cd models/sam3d       && CONDA_PREFIX=../../envs/sam3d-mamba/envs/sam3d-objects 
   ../../envs/sam3d-mamba/envs/sam3d-objects/bin/python demo.py
 ```
 
+## Running Distillation (distill_methods/)
+
+CWD must be `models/hunyuan3d21/hy3dshape` for hy3dshape imports to resolve.
+
+```bash
+cd models/hunyuan3d21/hy3dshape
+
+# Training (single GPU)
+PYTHONPATH=.:../../../distill_methods/src CUDA_VISIBLE_DEVICES=0 \
+  ../../../envs/hunyuan3d-venv/bin/python -u ../../../distill_methods/src/train.py \
+  --config ../../../distill_methods/config.yaml --method pd --stage 0
+
+# Training (multi-GPU via DDP)
+PYTHONPATH=.:../../../distill_methods/src CUDA_VISIBLE_DEVICES=0,1,2,3 \
+  torchrun --nproc_per_node=4 ../../../distill_methods/src/train.py \
+  --config ../../../distill_methods/config.yaml --method pd --stage 0
+```
+
+## Hardware
+
+- **GPUs**: 4x NVIDIA L20X 144GB (compute capability 8.9, sm_89)
+- **Storage**: Alibaba CPFS (shared network filesystem). Initial model loads are slow (~5 min for 6.9GB ckpt); subsequent loads use OS page cache.
+
+## Rendering
+
+- **Blender 3.6** with GPU rendering (CYCLES + CUDA). Do not use CPU device.
+
 ## Rules
 
 - Never fabricate weights URLs or dataset links — only cite what exists in the repo.
@@ -69,3 +101,4 @@ cd models/sam3d       && CONDA_PREFIX=../../envs/sam3d-mamba/envs/sam3d-objects 
 - **Dataset paths**: New experiments reference `datasets/Toys4k/official/` and `datasets/Toys4k/renders/` directly. Past experiments use `datasets/Toys4k/compat/` symlinks.
 - **Active models**: New experiments use trellis2 and hunyuan3d21 only. Others may be re-added later.
 - **Comments in English**: All comments, docstrings, and documentation should be written in English.
+- **Geometry only**: Focus on structure and geometry. Zero interest in appearance/texture.
