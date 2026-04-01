@@ -25,6 +25,12 @@ training:
   gradient_clip: 1.0
   log_interval: 50
   save_interval: 1000
+  total_steps: 15000
+
+  optimizer:
+    type: AdamW
+    lr: 1.0e-5
+    weight_decay: 0.01
 
   model:
     pretrained: tencent/Hunyuan3D-2.1
@@ -41,20 +47,13 @@ training:
     pd:
       stages: [[50, 25], [25, 12], [12, 6]]
       steps_per_stage: 5000
-      lr: 1.0e-5
     cd:
-      total_steps: 20000
-      lr: 1.0e-5
       num_timesteps: 50
     dmd1:
-      total_steps: 20000
-      lr: 1.0e-5
       lambda_reg: 1.0
       pairs_dir: /mnt/workspace/kuno/distillation/results/distill_methods/dmd1_pairs
       num_pairs: 20000
     dmd2:
-      total_steps: 20000
-      lr_g: 1.0e-5
       lr_d: 5.0e-5
       lambda_gan: 0.1
       d_update_ratio: 5

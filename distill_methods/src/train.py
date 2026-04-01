@@ -149,6 +149,9 @@ def main():
 
     # Method-specific setup
     method_cfg = config["training"]["methods"][args.method]
+    # total_steps: method-level override > global default
+    global_total_steps = config["training"]["total_steps"]
+
     if args.method == "pd":
         # For stage > 0, load the merged model from the previous stage
         if args.stage > 0:
@@ -167,7 +170,7 @@ def main():
         distiller.set_stage(args.stage)
         total_steps = method_cfg["steps_per_stage"]
     else:
-        total_steps = method_cfg["total_steps"]
+        total_steps = method_cfg.get("total_steps", global_total_steps)
 
     distiller.train(dataloader, total_steps=total_steps)
 

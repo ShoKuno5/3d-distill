@@ -33,14 +33,6 @@ class ConsistencyDistillation(BaseDistiller):
     def _method_name(self) -> str:
         return "cd"
 
-    def _setup_optimizer(self):
-        cd_cfg = self.config["training"]["methods"]["cd"]
-        self.optimizer = torch.optim.AdamW(
-            [p for p in self.student.parameters() if p.requires_grad],
-            lr=cd_cfg["lr"],
-            weight_decay=0.01,
-        )
-
     # ------------------------------------------------------------------
     # Consistency function
     # ------------------------------------------------------------------
@@ -61,13 +53,13 @@ class ConsistencyDistillation(BaseDistiller):
     # ------------------------------------------------------------------
 
     def training_step(self, batch: dict, step: int) -> dict:
-        """CD training step.
+        """CD training step (Song et al. 2023, Algorithm 2).
 
-        1. Sample t from discrete schedule, avoid t=0 boundary
+        1. Sample t from discrete schedule: t in {0, h, ..., 1-h}
         2. Create x_t = diffuse(x_data, t, noise)
-        3. Teacher 1 Euler step backward: x_{t-h} from x_t
-        4. Student consistency: f_student(x_t, t)
-        5. EMA consistency target: f_EMA(x_{t-h}, t-h)  (no grad)
+        3. Teacher 1 Euler step forward: x_{t+h} from x_t (toward data)
+        4. Student consistency at noisier point: f_student(x_t, t)
+        5. EMA consistency target at cleaner point: f_EMA(x_{t+h}, t+h)
         6. Loss = MSE(student, EMA_target)
         """
         x_data = batch["latent"]
@@ -78,34 +70,38 @@ class ConsistencyDistillation(BaseDistiller):
         noise = torch.randn_like(x_data)
         h = self.h
 
-        # Sample t from (h, 1] -- exclude t=0 to avoid degenerate h-step
-        t_indices = torch.randint(1, self.num_timesteps, (B,), device=self.device)
-        t = t_indices.float() * h  # t in {h, 2h, ..., 1-h, 1}
-        t = t.clamp(h, 1.0)
+        # Sample t in {0, h, 2h, ..., 1-h} — leave room for teacher +h step.
+        # Paper: n ~ U{1,N-1}, student at t_{n+1} (noisy), EMA at t_n (clean).
+        # In flow-matching convention (t=0 noise, t=1 data) this maps to
+        # student at t (noisier) and EMA at t+h (cleaner, closer to boundary).
+        t_indices = torch.randint(0, self.num_timesteps, (B,), device=self.device)
+        t = t_indices.float() * h  # t in {0, h, 2h, ..., 1-h}
 
         # Create noisy sample at t
         x_t = self.diffuse(x_data, t, noise)
 
-        # --- Teacher 1-step backward: get x_{t-h} ---
-        # Move backward along the ODE: x_{t-h} = x_t - h * v_teacher(x_t, t)
-        # Note: forward ODE goes from 0 to 1, so backward is -h
+        # --- Teacher 1-step forward: get x_{t+h} (closer to data) ---
+        # Paper Eq. (6): x̂_{t_n} = x_{t_{n+1}} + (t_n - t_{n+1}) * Φ(...)
+        # In flow-matching: step +h along velocity toward data.
         v_teacher = self.teacher_forward(x_t, t, contexts)
-        x_prev = self.euler_step(x_t, v_teacher, torch.tensor(-h, device=self.device))
-        t_prev = (t - h).clamp(0.0, 1.0)
+        x_next = self.euler_step(x_t, v_teacher, torch.tensor(h, device=self.device))
+        t_next = (t + h).clamp(0.0, 1.0)
 
-        # --- Student consistency function at (x_t, t) ---
+        # --- Student consistency at noisier point (x_t, t) ---
+        # Paper: f_θ(x_{t_{n+1}}, t_{n+1}) — online model at noisy side
         with torch.autocast("cuda", dtype=torch.bfloat16):
             f_student = self.consistency_fn(self.student_forward, x_t, t, contexts)
 
-        # --- EMA target at (x_{t-h}, t-h) ---
+        # --- EMA target at cleaner point (x_{t+h}, t+h) ---
+        # Paper: f_{θ^-}(x̂_{t_n}, t_n) — EMA at clean side (anchored by boundary)
         with torch.no_grad():
             with self.ema_scope():
                 with torch.autocast("cuda", dtype=torch.bfloat16):
                     f_target = self.consistency_fn(
-                        self.student_forward, x_prev, t_prev, contexts,
+                        self.student_forward, x_next, t_next, contexts,
                     )
 
-        # Consistency loss
+        # Consistency loss — paper Eq. (7) with d(x,y) = ||x-y||² and λ=1
         loss = torch.nn.functional.mse_loss(f_student, f_target.detach())
 
         return {"loss": loss}

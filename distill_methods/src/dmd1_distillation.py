@@ -109,7 +109,7 @@ class DMD1Distillation(BaseDistiller):
         return "dmd1"
 
     def _setup_optimizer(self):
-        dmd1_cfg = self.config["training"]["methods"]["dmd1"]
+        opt_cfg = self.config["training"]["optimizer"]
         model = self.student.module if self.is_distributed else self.student
 
         # Student optimizer (default adapter params)
@@ -119,13 +119,13 @@ class DMD1Distillation(BaseDistiller):
             if "fake_score" not in n and p.requires_grad
         ]
         self.optimizer = torch.optim.AdamW(
-            student_params, lr=dmd1_cfg["lr"], weight_decay=0.01,
+            student_params, lr=opt_cfg["lr"], weight_decay=opt_cfg["weight_decay"],
         )
 
         # Fake score optimizer
         fake_params = self.fake_score_adapter.fake_score_params()
         self.optimizer_fake = torch.optim.AdamW(
-            fake_params, lr=dmd1_cfg["lr"], weight_decay=0.01,
+            fake_params, lr=opt_cfg["lr"], weight_decay=opt_cfg["weight_decay"],
         )
 
     # Flag: we handle backward ourselves
@@ -192,7 +192,7 @@ class DMD1Distillation(BaseDistiller):
 
         # Target: the true velocity for this diffusion (x_fake - eps)
         v_target = self.get_velocity(x_fake, eps)
-        loss_fake = nn.functional.mse_loss(v_fake, v_target.detach())
+        loss_fake = nn.functional.mse_loss(v_fake.float(), v_target.float().detach())
 
         self.optimizer_fake.zero_grad()
         loss_fake.backward()
@@ -211,9 +211,10 @@ class DMD1Distillation(BaseDistiller):
     # ------------------------------------------------------------------
 
     def training_step(self, batch: dict, step: int) -> dict:
-        """DMD1 training step: fake score update -> student update.
+        """DMD1 training step (Yin et al. 2024, Algorithm 1).
 
-        Student loss = L_distill + lambda_reg * L_regress
+        Phase 1: Update fake score via DSM on student outputs.
+        Phase 2: Update student with L_distill + lambda_reg * L_regress.
         """
         # --- Phase 1: Update fake score ---
         loss_fake = self._train_fake_score(batch)
@@ -233,24 +234,36 @@ class DMD1Distillation(BaseDistiller):
             )
         x_gen = self.euler_step(noise, v_student, torch.ones(B, device=self.device))
 
-        # KL gradient: score_fake - score_teacher at x_gen
+        # KL gradient via score difference (paper Eq. 7, Algorithm 2)
         t_kl = self.sample_t(B, self.device)
         eps_kl = torch.randn_like(x_gen)
         x_gen_noised = self.diffuse(x_gen, t_kl, eps_kl)
 
-        # Fake score at x_gen
+        # Denoiser predictions: mu(x_t, t) = x_t + (1-t) * v(x_t, t)
+        # Paper uses denoiser outputs (not raw velocity) for score difference.
+        t_expand = t_kl.view(-1, *([1] * (x_gen.dim() - 1)))
         with torch.no_grad():
             self.fake_score_adapter.activate_fake_score()
             with torch.autocast("cuda", dtype=torch.bfloat16):
                 v_fake_at_gen = self.student_forward(x_gen_noised, t_kl, contexts)
             self.fake_score_adapter.activate_student()
 
-        # Teacher score at x_gen
-        v_teacher_at_gen = self.teacher_forward(x_gen_noised, t_kl, contexts)
+            v_teacher_at_gen = self.teacher_forward(x_gen_noised, t_kl, contexts)
 
-        # KL distillation loss (score difference as gradient, stop-grad trick)
-        grad_kl = (v_fake_at_gen - v_teacher_at_gen).detach()
-        loss_distill = (grad_kl * x_gen).sum() / B
+            # Convert velocity to denoiser output (paper Eq. 4-5)
+            mu_fake = x_gen_noised + (1.0 - t_expand) * v_fake_at_gen
+            mu_teacher = x_gen_noised + (1.0 - t_expand) * v_teacher_at_gen
+
+            # Adaptive weighting (paper Eq. 8): normalize by denoising error
+            weight_denom = (mu_teacher - x_gen).abs().mean(
+                dim=list(range(1, x_gen.dim())), keepdim=True,
+            ).clamp(min=1e-6)
+            grad_direction = (mu_fake - mu_teacher) / weight_denom
+
+        # Stop-gradient trick (paper Algorithm 2):
+        # loss = 0.5 * MSE(x, sg(x - grad)), gradient = grad * dx/dtheta
+        target = (x_gen - grad_direction).detach()
+        loss_distill = 0.5 * nn.functional.mse_loss(x_gen, target)
 
         # Regression loss (against pre-generated pairs)
         pairs_batch = self._get_pairs_batch()

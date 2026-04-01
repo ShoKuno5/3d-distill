@@ -82,6 +82,9 @@ class BaseDistiller:
         logger.info("Loading pipeline from %s ...", model_cfg["pretrained"])
         self.teacher, self._pipeline = _load_pipeline(model_cfg["pretrained"])
         self.teacher.to(self.device)
+        # Convert fp16 weights to bf16 to match autocast dtype
+        if train_cfg.get("bf16", False):
+            self.teacher.to(torch.bfloat16)
         self.teacher.eval()
         for p in self.teacher.parameters():
             p.requires_grad_(False)
@@ -145,8 +148,16 @@ class BaseDistiller:
         raise NotImplementedError
 
     def _setup_optimizer(self):
-        """Create optimizer(s). Called by subclass __init__."""
-        raise NotImplementedError
+        """Create optimizer from global training.optimizer config.
+
+        Subclasses with multiple optimizers (DMD1, DMD2) override this.
+        """
+        opt_cfg = self.config["training"]["optimizer"]
+        self.optimizer = torch.optim.AdamW(
+            [p for p in self.student.parameters() if p.requires_grad],
+            lr=opt_cfg["lr"],
+            weight_decay=opt_cfg["weight_decay"],
+        )
 
     # ------------------------------------------------------------------
     # Flow Matching primitives (ICPlan convention)
@@ -222,12 +233,12 @@ class BaseDistiller:
     def ema_scope(self):
         """Context manager: temporarily swap student weights with EMA."""
         model = self.student.module if self.is_distributed else self.student
-        self.ema.store(model.named_parameters())
+        self.ema.store(model)
         self.ema.copy_to(model)
         try:
             yield
         finally:
-            self.ema.restore(model.named_parameters())
+            self.ema.restore(model)
 
     # ------------------------------------------------------------------
     # Training loop

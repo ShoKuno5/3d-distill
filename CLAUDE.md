@@ -21,7 +21,8 @@ distillation/
 │   ├── config.yaml     # Full experiment config (dataset, training, models, metrics)
 │   ├── manifest.csv    # Sample list for this experiment
 │   ├── src/            # Training code: base_distiller, pd/cd/dmd1/dmd2, train.py
-│   └── scripts/        # Data prep, inference, comparison scripts
+│   ├── scripts/        # Data prep, inference, comparison scripts
+│   └── reports/        # Experiment reports (generated via /report-experiment)
 ├── results/            # Predictions, metrics, reports
 ├── envs/               # Runtime environments (not shared across repos)
 ├── docs/               # Project-wide documents
@@ -102,3 +103,5 @@ PYTHONPATH=.:../../../distill_methods/src CUDA_VISIBLE_DEVICES=0,1,2,3 \
 - **Active models**: New experiments use trellis2 and hunyuan3d21 only. Others may be re-added later.
 - **Comments in English**: All comments, docstrings, and documentation should be written in English.
 - **Geometry only**: Focus on structure and geometry. Zero interest in appearance/texture.
+- **No hardcoded hyperparameters**: All training hyperparameters (lr, weight_decay, total_steps, etc.) must come from `config.yaml`. Shared params go in `training.optimizer` or top-level `training.*`; method-specific params go in `training.methods.<name>`. Never hardcode numeric values in Python code.
+- **Experiment reports**: Use `/report-experiment [focus]` to generate reports. Reports are saved to `distill_methods/reports/` as markdown. Uses git diff to detect new/changed results since the last `[report]` commit. Reports are agentic — Claude reads all logs, config, and code to write analysis, not mechanical parsing.

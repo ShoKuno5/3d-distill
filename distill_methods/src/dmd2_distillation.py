@@ -89,13 +89,8 @@ class DMD2Distillation(DMD1Distillation):
 
         # Discriminator
         # DiT hidden dim: determined from the model config
-        # HunyuanDiT uses hidden_size (typically 1536 for the 3.3B model)
         dit_model = self.teacher
-        if hasattr(dit_model, "hidden_size"):
-            feature_dim = dit_model.hidden_size
-        else:
-            # Fallback: inspect first block output
-            feature_dim = 1536
+        feature_dim = getattr(dit_model, "hidden_size", 1024)
         self.discriminator = FeatureDiscriminator(feature_dim).to(self.device)
         logger.info(
             "Discriminator: %.2fM params (feature_dim=%d)",
@@ -103,19 +98,24 @@ class DMD2Distillation(DMD1Distillation):
             feature_dim,
         )
 
-        # Feature extraction hook
+        # Feature extraction hook — use single_blocks (Hunyuan3DDiT) or blocks
         self._features = {}
-        self._hook_block_idx = len(dit_model.blocks) // 2  # middle block
-        self._hook_handle = dit_model.blocks[self._hook_block_idx].register_forward_hook(
+        teacher_blocks = self._get_hook_blocks(dit_model)
+        self._hook_block_idx = len(teacher_blocks) // 2
+        self._hook_handle = teacher_blocks[self._hook_block_idx].register_forward_hook(
             self._feature_hook
         )
+        logger.info(
+            "Teacher feature hook: block %d/%d",
+            self._hook_block_idx, len(teacher_blocks),
+        )
 
-        # Also register hook on student
+        # Also register hook on student (unwrap peft to find blocks)
         student_dit = model.base_model.model if hasattr(model, "base_model") else model
-        if hasattr(student_dit, "blocks"):
-            self._student_hook = student_dit.blocks[self._hook_block_idx].register_forward_hook(
-                self._student_feature_hook
-            )
+        student_blocks = self._get_hook_blocks(student_dit)
+        self._student_hook = student_blocks[self._hook_block_idx].register_forward_hook(
+            self._student_feature_hook
+        )
 
         # Replay buffer
         self.replay_buffer = ReplayBuffer(dmd2_cfg["replay_buffer_size"])
@@ -131,6 +131,23 @@ class DMD2Distillation(DMD1Distillation):
     def _method_name(self) -> str:
         return "dmd2"
 
+    @staticmethod
+    def _get_hook_blocks(model):
+        """Find the right transformer block list for feature hooks.
+
+        Hunyuan3DDiT has double_blocks + single_blocks (no 'blocks').
+        We hook into single_blocks since they output plain tensors,
+        while double_blocks output (img, txt) tuples.
+        """
+        if hasattr(model, "single_blocks") and len(model.single_blocks) > 0:
+            return model.single_blocks
+        if hasattr(model, "blocks"):
+            return model.blocks
+        raise RuntimeError(
+            f"Cannot find transformer blocks for feature hook on {type(model).__name__}. "
+            f"Expected 'single_blocks' or 'blocks' attribute."
+        )
+
     def _feature_hook(self, module, input, output):
         """Hook to capture teacher features."""
         self._features["teacher"] = output
@@ -141,28 +158,30 @@ class DMD2Distillation(DMD1Distillation):
 
     def _setup_optimizer_dmd2(self):
         """Create three optimizers: student, fake_score, discriminator."""
+        opt_cfg = self.config["training"]["optimizer"]
         dmd2_cfg = self.config["training"]["methods"]["dmd2"]
         model = self.student.module if self.is_distributed else self.student
 
-        # Student optimizer
+        # Student + fake score use global lr
         self.fake_score_adapter.activate_student()
         student_params = [
             p for n, p in model.named_parameters()
             if "fake_score" not in n and p.requires_grad
         ]
         self.optimizer = torch.optim.AdamW(
-            student_params, lr=dmd2_cfg["lr_g"], weight_decay=0.01,
+            student_params, lr=opt_cfg["lr"], weight_decay=opt_cfg["weight_decay"],
         )
 
-        # Fake score optimizer
         fake_params = self.fake_score_adapter.fake_score_params()
         self.optimizer_fake = torch.optim.AdamW(
-            fake_params, lr=dmd2_cfg["lr_g"], weight_decay=0.01,
+            fake_params, lr=opt_cfg["lr"], weight_decay=opt_cfg["weight_decay"],
         )
 
-        # Discriminator optimizer (higher LR per TTUR)
+        # Discriminator: method-specific lr (higher per TTUR)
         self.optimizer_d = torch.optim.AdamW(
-            self.discriminator.parameters(), lr=dmd2_cfg["lr_d"], weight_decay=0.01,
+            self.discriminator.parameters(),
+            lr=dmd2_cfg["lr_d"],
+            weight_decay=opt_cfg["weight_decay"],
         )
 
     _custom_backward = True
@@ -192,10 +211,11 @@ class DMD2Distillation(DMD1Distillation):
     # ------------------------------------------------------------------
 
     def _train_discriminator(self, batch: dict):
-        """Update discriminator with hinge loss.
+        """Update discriminator with non-saturating GAN loss (paper Eq. 4).
 
-        real = teacher samples from replay buffer
-        fake = student 1-step outputs (detached)
+        Features extracted via mu_fake (fake score adapter), NOT teacher.
+        Paper: "we add a classification branch on top of the bottleneck
+        of the fake diffusion denoiser."
         """
         B = batch["latent"].shape[0]
         image_cond = batch["image_cond"]
@@ -204,7 +224,7 @@ class DMD2Distillation(DMD1Distillation):
         # Real samples from replay buffer
         x_real = self.replay_buffer.sample(B, self.device)
 
-        # Fake samples from student
+        # Fake samples from student (detached)
         noise = torch.randn_like(batch["latent"])
         with torch.no_grad():
             self.fake_score_adapter.activate_student()
@@ -214,29 +234,35 @@ class DMD2Distillation(DMD1Distillation):
                 )
             x_fake = self.euler_step(noise, v_student, torch.ones(B, device=self.device))
 
-        # Get features via teacher forward (triggers hook)
-        t_probe = torch.ones(B, device=self.device) * 0.5
+        # Extract features via mu_fake at random timestep (paper Section 4.3)
+        t_d = self.sample_t(B, self.device)
+        self.fake_score_adapter.activate_fake_score()
         with torch.no_grad():
-            # Run teacher on real to get features
-            self.teacher(self.diffuse(x_real, t_probe, torch.randn_like(x_real)),
-                         t_probe, contexts=contexts)
-        feat_real = self._features.get("teacher")
+            with torch.autocast("cuda", dtype=torch.bfloat16):
+                self.student_forward(
+                    self.diffuse(x_real, t_d, torch.randn_like(x_real)),
+                    t_d, contexts,
+                )
+            feat_real = self._features.get("student")
 
-        with torch.no_grad():
-            self.teacher(self.diffuse(x_fake, t_probe, torch.randn_like(x_fake)),
-                         t_probe, contexts=contexts)
-        feat_fake = self._features.get("teacher")
+            with torch.autocast("cuda", dtype=torch.bfloat16):
+                self.student_forward(
+                    self.diffuse(x_fake, t_d, torch.randn_like(x_fake)),
+                    t_d, contexts,
+                )
+            feat_fake = self._features.get("student")
+        self.fake_score_adapter.activate_student()
 
         if feat_real is None or feat_fake is None:
             logger.warning("Feature hook failed, skipping D update")
             return torch.tensor(0.0, device=self.device)
 
-        # Hinge loss
+        # Non-saturating GAN loss (paper Eq. 4, not hinge)
         d_real = self.discriminator(feat_real.detach().float())
         d_fake = self.discriminator(feat_fake.detach().float())
         loss_d = (
-            torch.nn.functional.relu(1.0 - d_real).mean()
-            + torch.nn.functional.relu(1.0 + d_fake).mean()
+            nn.functional.softplus(-d_real).mean()
+            + nn.functional.softplus(d_fake).mean()
         )
 
         self.optimizer_d.zero_grad()
@@ -250,18 +276,23 @@ class DMD2Distillation(DMD1Distillation):
     # ------------------------------------------------------------------
 
     def training_step(self, batch: dict, step: int) -> dict:
-        """DMD2 step: fake_score -> discriminator x d_update_ratio -> student (KL + GAN)."""
+        """DMD2 step (Yin et al. 2024).
 
-        # --- Phase 1: Update fake score (same as DMD1) ---
-        loss_fake = self._train_fake_score(batch)
+        TTUR: update fake_score + discriminator K times, then student once.
+        Student loss = L_distill (KL via score diff) + lambda_gan * L_GAN.
+        """
+        batch_size = self.config["training"]["batch_size"]
 
-        # --- Phase 2: Update discriminator (TTUR: multiple updates) ---
+        # --- Phase 1+2: TTUR — update fake score + D together K times ---
+        # Paper: "update mu_fake 5 times per 1 generator update"
+        loss_fake = torch.tensor(0.0, device=self.device)
         loss_d = torch.tensor(0.0, device=self.device)
-        if len(self.replay_buffer) >= self.config["training"]["batch_size"]:
-            for _ in range(self.d_update_ratio):
+        for _ in range(self.d_update_ratio):
+            loss_fake = self._train_fake_score(batch)
+            if len(self.replay_buffer) >= batch_size:
                 loss_d = self._train_discriminator(batch)
 
-        # --- Phase 3: Update student (KL + GAN, no regression) ---
+        # --- Phase 3: Update student (KL + GAN) ---
         x_data = batch["latent"]
         image_cond = batch["image_cond"]
         B = x_data.shape[0]
@@ -276,33 +307,55 @@ class DMD2Distillation(DMD1Distillation):
             )
         x_gen = self.euler_step(noise, v_student, torch.ones(B, device=self.device))
 
-        # KL distillation (same as DMD1)
+        # KL distillation — same fixes as DMD1 (denoiser output, adaptive
+        # weighting, MSE stop-grad trick)
         t_kl = self.sample_t(B, self.device)
         eps_kl = torch.randn_like(x_gen)
         x_gen_noised = self.diffuse(x_gen, t_kl, eps_kl)
 
+        t_expand = t_kl.view(-1, *([1] * (x_gen.dim() - 1)))
         with torch.no_grad():
             self.fake_score_adapter.activate_fake_score()
             with torch.autocast("cuda", dtype=torch.bfloat16):
                 v_fake_at_gen = self.student_forward(x_gen_noised, t_kl, contexts)
             self.fake_score_adapter.activate_student()
 
-        v_teacher_at_gen = self.teacher_forward(x_gen_noised, t_kl, contexts)
-        grad_kl = (v_fake_at_gen - v_teacher_at_gen).detach()
-        loss_distill = (grad_kl * x_gen).sum() / B
+            v_teacher_at_gen = self.teacher_forward(x_gen_noised, t_kl, contexts)
 
-        # GAN generator loss
+            # Convert velocity to denoiser output (paper Eq. 4-5)
+            mu_fake = x_gen_noised + (1.0 - t_expand) * v_fake_at_gen
+            mu_teacher = x_gen_noised + (1.0 - t_expand) * v_teacher_at_gen
+
+            # Adaptive weighting (paper Eq. 8)
+            weight_denom = (mu_teacher - x_gen).abs().mean(
+                dim=list(range(1, x_gen.dim())), keepdim=True,
+            ).clamp(min=1e-6)
+            grad_direction = (mu_fake - mu_teacher) / weight_denom
+
+        # Stop-gradient trick: loss = 0.5 * MSE(x, sg(x - grad))
+        target = (x_gen - grad_direction).detach()
+        loss_distill = 0.5 * nn.functional.mse_loss(x_gen, target)
+
+        # GAN generator loss — features from mu_fake on noised x_gen
+        # Paper: generator minimizes -log(D(feat)) (non-saturating)
         loss_gan = torch.tensor(0.0, device=self.device)
-        if len(self.replay_buffer) >= self.config["training"]["batch_size"]:
-            # Get features for generated samples
-            t_gan = torch.ones(B, device=self.device) * 0.5
-            with torch.no_grad():
-                self.teacher(self.diffuse(x_gen.detach(), t_gan, torch.randn_like(x_gen)),
-                             t_gan, contexts=contexts)
-            feat_gen = self._features.get("teacher")
+        if len(self.replay_buffer) >= batch_size:
+            t_gan = self.sample_t(B, self.device)
+            noise_gan = torch.randn_like(x_gen)
+            x_gen_noised_gan = self.diffuse(x_gen, t_gan, noise_gan)
+
+            # Run noised x_gen through mu_fake to extract features.
+            # Gradients flow: D -> features -> mu_fake(x_gen_noised) -> x_gen -> student.
+            # mu_fake params receive spurious gradients but are not in self.optimizer.
+            self.fake_score_adapter.activate_fake_score()
+            with torch.autocast("cuda", dtype=torch.bfloat16):
+                self.student_forward(x_gen_noised_gan, t_gan, contexts)
+            feat_gen = self._features.get("student")
+            self.fake_score_adapter.activate_student()
+
             if feat_gen is not None:
                 d_gen = self.discriminator(feat_gen.float())
-                loss_gan = -d_gen.mean()
+                loss_gan = nn.functional.softplus(-d_gen).mean()
 
         loss = loss_distill + self.lambda_gan * loss_gan
 
@@ -314,9 +367,8 @@ class DMD2Distillation(DMD1Distillation):
         )
         self.optimizer.step()
 
-        # Add current data to replay buffer periodically
-        if step % 10 == 0:
-            self.replay_buffer.add(x_data)
+        # Add training data to replay buffer
+        self.replay_buffer.add(x_data)
 
         return {
             "loss": loss.detach(),

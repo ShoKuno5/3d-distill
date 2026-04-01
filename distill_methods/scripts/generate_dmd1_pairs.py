@@ -130,8 +130,8 @@ def main():
         image_cond_t = torch.from_numpy(image_cond).to(device)
         contexts = {"main": image_cond_t}
 
-        # Random noise matching latent shape
-        noise = torch.randn(B, *latent_shape[1:], device=device, dtype=torch.float32)
+        # Random noise matching latent shape (latent_shape is per-sample, e.g. (4096, 64))
+        noise = torch.randn(B, *latent_shape, device=device, dtype=torch.float32)
 
         # Teacher 50-step ODE
         x_teacher = teacher_ode_solve(
@@ -147,7 +147,7 @@ def main():
                 os.path.join(pairs_dir, f"pair_{pair_idx:06d}.npz"),
                 noise=noise_np[j],
                 x_teacher=x_teacher_np[j],
-                image_cond=image_cond[cond_indices[j]],
+                image_cond=image_cond[j],
             )
             pair_idx += 1
 

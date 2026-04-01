@@ -34,14 +34,6 @@ class ProgressiveDistillation(BaseDistiller):
     def _method_name(self) -> str:
         return "pd"
 
-    def _setup_optimizer(self):
-        pd_cfg = self.config["training"]["methods"]["pd"]
-        self.optimizer = torch.optim.AdamW(
-            [p for p in self.student.parameters() if p.requires_grad],
-            lr=pd_cfg["lr"],
-            weight_decay=0.01,
-        )
-
     # ------------------------------------------------------------------
     # Stage management
     # ------------------------------------------------------------------
@@ -209,9 +201,13 @@ class ProgressiveDistillation(BaseDistiller):
         # --- Student 1-step (2h) ---
         with torch.autocast("cuda", dtype=torch.bfloat16):
             v_student = self.student_forward(x_t, t, contexts)
-        x_pred = self.euler_step(x_t, v_student, torch.tensor(2.0 * h, device=self.device))
 
-        # MSE loss
-        loss = torch.nn.functional.mse_loss(x_pred, x_tgt.detach())
+        # Loss in velocity space (Salimans & Ho, 2022).
+        # The teacher target velocity is the average displacement over 2h:
+        #   v_tgt = (x_tgt - x_t) / (2h)
+        # Previous implementation used x-space MSE, which scales as (2h)^2
+        # and causes implicit loss weighting differences across stages.
+        v_tgt = (x_tgt.detach() - x_t) / (2.0 * h)
+        loss = torch.nn.functional.mse_loss(v_student, v_tgt)
 
         return {"loss": loss}
