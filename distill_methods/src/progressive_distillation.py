@@ -212,6 +212,6 @@ class ProgressiveDistillation(BaseDistiller):
         # Previous implementation used x-space MSE, which scales as (2h)^2
         # and causes implicit loss weighting differences across stages.
         v_tgt = (x_tgt.detach() - x_t) / (2.0 * h)
-        loss = torch.nn.functional.mse_loss(v_student, v_tgt)
+        loss = torch.nn.functional.mse_loss(v_student.float(), v_tgt.float())
 
         return {"loss": loss}

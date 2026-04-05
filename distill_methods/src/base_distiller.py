@@ -267,13 +267,15 @@ class BaseDistiller:
         cfg = self._wandb_cfg
         method = self._method_name()
         run_name = getattr(self, "_run_name", method)
+        # Finish any lingering run before starting a new one
+        if wandb.run is not None:
+            wandb.finish()
         wandb.init(
             project=cfg["project"],
             entity=cfg.get("entity"),
             name=run_name,
             group=method,
             config=self.config,
-            finish_previous=True,
         )
         logger.info("Wandb initialized: project=%s, run=%s", cfg["project"], run_name)
 
