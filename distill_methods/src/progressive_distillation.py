@@ -192,10 +192,14 @@ class ProgressiveDistillation(BaseDistiller):
         x_t = self.diffuse(x_data, t, noise)
 
         # --- Teacher 2-step ---
-        v1 = self.teacher_forward(x_t, t, contexts)
+        # Stage 0: teacher is the pretrained model, use CFG.
+        # Stage > 0: teacher is the merged student from the previous stage,
+        # which was distilled to work without CFG, so use guidance_scale=1.0.
+        teacher_cfg = self.guidance_scale if self.current_stage == 0 else 1.0
+        v1 = self.teacher_forward(x_t, t, contexts, guidance_scale=teacher_cfg)
         x_mid = self.euler_step(x_t, v1, torch.tensor(h, device=self.device))
         t_mid = t + h
-        v2 = self.teacher_forward(x_mid, t_mid, contexts)
+        v2 = self.teacher_forward(x_mid, t_mid, contexts, guidance_scale=teacher_cfg)
         x_tgt = self.euler_step(x_mid, v2, torch.tensor(h, device=self.device))
 
         # --- Student 1-step (2h) ---

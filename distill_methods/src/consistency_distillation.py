@@ -74,8 +74,9 @@ class ConsistencyDistillation(BaseDistiller):
         # Paper: n ~ U{1,N-1}, student at t_{n+1} (noisy), EMA at t_n (clean).
         # In flow-matching convention (t=0 noise, t=1 data) this maps to
         # student at t (noisier) and EMA at t+h (cleaner, closer to boundary).
-        t_indices = torch.randint(0, self.num_timesteps, (B,), device=self.device)
-        t = t_indices.float() * h  # t in {0, h, 2h, ..., 1-h}
+        # Exclude t=0 (pure noise boundary) — Song et al. 2023 samples n in {1,...,N-1}
+        t_indices = torch.randint(1, self.num_timesteps, (B,), device=self.device)
+        t = t_indices.float() * h  # t in {h, 2h, ..., 1-h}
 
         # Create noisy sample at t
         x_t = self.diffuse(x_data, t, noise)

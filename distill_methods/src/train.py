@@ -31,11 +31,7 @@ import torch.distributed as dist
 from torch.utils.data import DataLoader, Dataset, DistributedSampler
 import yaml
 
-# Wandb API key (set before wandb import in base_distiller)
-os.environ.setdefault(
-    "WANDB_API_KEY",
-    "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",
-)
+# Wandb API key: set via WANDB_API_KEY env var or `wandb login`
 
 logger = logging.getLogger(__name__)
 
@@ -151,8 +147,9 @@ def main():
 
     distiller = method_cls(config)
 
+    resume_step = 0
     if args.resume:
-        distiller.load_checkpoint(args.resume)
+        resume_step = distiller.load_checkpoint(args.resume)
 
     # Method-specific setup
     method_cfg = config["training"]["methods"][args.method]
@@ -184,7 +181,7 @@ def main():
         run_name = f"{args.method}_{total_steps}steps_{datetime.now():%m%d_%H%M}"
 
     distiller.set_run_name(run_name)
-    distiller.train(dataloader, total_steps=total_steps)
+    distiller.train(dataloader, total_steps=total_steps, resume_step=resume_step)
 
     # For PD, save merged model after each stage for next stage handoff
     if args.method == "pd" and distiller.is_main:

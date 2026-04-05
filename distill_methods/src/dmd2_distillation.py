@@ -285,6 +285,9 @@ class DMD2Distillation(DMD1Distillation):
 
         # --- Phase 1+2: TTUR — update fake score + D together K times ---
         # Paper: "update mu_fake 5 times per 1 generator update"
+        # NOTE: same batch conditioning reused for all K iterations; fresh noise
+        # is generated inside each sub-step. Ideally each iteration would use
+        # a fresh batch, but this requires a secondary dataloader iterator.
         loss_fake = torch.tensor(0.0, device=self.device)
         loss_d = torch.tensor(0.0, device=self.device)
         for _ in range(self.d_update_ratio):
@@ -360,6 +363,9 @@ class DMD2Distillation(DMD1Distillation):
         loss = loss_distill + self.lambda_gan * loss_gan
 
         self.optimizer.zero_grad()
+        # Clear fake_score grads to prevent stale GAN gradients from
+        # leaking into the next TTUR fake_score update.
+        self.optimizer_fake.zero_grad()
         loss.backward()
         torch.nn.utils.clip_grad_norm_(
             [p for p in self.student.parameters() if p.requires_grad],
@@ -382,7 +388,7 @@ class DMD2Distillation(DMD1Distillation):
     # Override train() to add replay warmup
     # ------------------------------------------------------------------
 
-    def train(self, dataloader, total_steps: int):
+    def train(self, dataloader, total_steps: int, resume_step: int = 0):
         """Override to warm up replay buffer before training."""
         self._fill_replay_buffer(dataloader)
-        super().train(dataloader, total_steps)
+        super().train(dataloader, total_steps, resume_step=resume_step)

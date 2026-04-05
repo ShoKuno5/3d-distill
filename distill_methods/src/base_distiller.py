@@ -197,9 +197,9 @@ class BaseDistiller:
         return x_t + dt * v
 
     @staticmethod
-    def sample_t(batch_size: int, device: torch.device) -> torch.Tensor:
-        """Sample timesteps uniformly from [0, 1]."""
-        return torch.rand(batch_size, device=device)
+    def sample_t(batch_size: int, device: torch.device, eps: float = 1e-3) -> torch.Tensor:
+        """Sample timesteps uniformly from [eps, 1-eps]."""
+        return torch.rand(batch_size, device=device) * (1.0 - 2 * eps) + eps
 
     # ------------------------------------------------------------------
     # Model forwards
@@ -286,14 +286,14 @@ class BaseDistiller:
     # Training loop
     # ------------------------------------------------------------------
 
-    def train(self, dataloader, total_steps: int):
+    def train(self, dataloader, total_steps: int, resume_step: int = 0):
         """Main training loop. Subclasses implement training_step()."""
         model = self.student.module if self.is_distributed else self.student
         model.train()
 
         self._init_wandb()
 
-        step = 0
+        step = resume_step
         epoch = 0
         log_interval = self.config["training"]["log_interval"]
         save_interval = self.config["training"]["save_interval"]
@@ -349,19 +349,28 @@ class BaseDistiller:
     # ------------------------------------------------------------------
 
     def save_checkpoint(self, step):
-        """Save LoRA weights only."""
+        """Save LoRA weights, optimizer state, EMA, and step counter."""
         save_dir = os.path.join(self.ckpt_dir, f"step_{step}")
         os.makedirs(save_dir, exist_ok=True)
         model = self.student.module if self.is_distributed else self.student
         model.save_pretrained(save_dir)
 
-        # Save EMA separately
+        # Save EMA
         ema_path = os.path.join(save_dir, "ema.pt")
         torch.save(self.ema.state_dict(), ema_path)
-        logger.info("Saved checkpoint: %s", save_dir)
 
-    def load_checkpoint(self, path: str):
-        """Load LoRA weights from checkpoint.
+        # Save optimizer state and step counter for resume
+        train_state = {"step": step}
+        if hasattr(self, "optimizer") and self.optimizer is not None:
+            train_state["optimizer"] = self.optimizer.state_dict()
+        torch.save(train_state, os.path.join(save_dir, "train_state.pt"))
+
+        logger.info("Saved checkpoint: %s (step=%s)", save_dir, step)
+
+    def load_checkpoint(self, path: str) -> int:
+        """Load LoRA weights, optimizer state, and EMA from checkpoint.
+
+        Returns the step counter from the checkpoint (0 if not saved).
 
         When the current student is a PeftModel, extracting base_model.model
         leaves peft hooks/attributes that prevent from_pretrained from
@@ -382,10 +391,25 @@ class BaseDistiller:
                 self.student, device_ids=[self.rank], find_unused_parameters=False,
             )
 
+        # Rebuild optimizer with new model parameters
+        self._setup_optimizer()
+
+        # Restore optimizer state and step counter
+        resume_step = 0
+        train_state_path = os.path.join(path, "train_state.pt")
+        if os.path.exists(train_state_path):
+            train_state = torch.load(train_state_path, map_location=self.device)
+            if "optimizer" in train_state and hasattr(self, "optimizer"):
+                self.optimizer.load_state_dict(train_state["optimizer"])
+            resume_step = train_state.get("step", 0)
+            logger.info("Restored optimizer state, resume from step %d", resume_step)
+
         ema_path = os.path.join(path, "ema.pt")
         if os.path.exists(ema_path):
             self.ema.load_state_dict(torch.load(ema_path, map_location=self.device))
             logger.info("Loaded EMA from %s", ema_path)
+
+        return resume_step
 
     # ------------------------------------------------------------------
     # Logging
