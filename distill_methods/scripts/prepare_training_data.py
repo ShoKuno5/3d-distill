@@ -61,6 +61,8 @@ def main():
     parser.add_argument("--config", required=True, help="Path to config.yaml")
     parser.add_argument("--max-samples", type=int, default=None)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--shard", type=int, default=0, help="Shard index for multi-GPU")
+    parser.add_argument("--num-shards", type=int, default=1, help="Total number of shards")
     args = parser.parse_args()
 
     with open(args.config) as f:
@@ -78,7 +80,12 @@ def main():
             existing.add(s.object_id)
 
     missing = [s for s in samples if s.object_id not in existing]
-    print(f"Training data: {len(existing)}/{len(samples)} exist, {len(missing)} to encode")
+
+    # Shard the missing samples for multi-GPU parallelism
+    if args.num_shards > 1:
+        missing = [s for i, s in enumerate(missing) if i % args.num_shards == args.shard]
+
+    print(f"Training data: {len(existing)}/{len(samples)} exist, {len(missing)} to encode (shard {args.shard}/{args.num_shards})")
 
     if not missing:
         print("All training data ready.")

@@ -346,7 +346,8 @@ def main():
 
     # --- Load samples ---
     max_samples = args.max_samples or cfg["dataset"].get("max_samples")
-    samples = load_manifest(cfg["dataset"]["manifest"])
+    manifest_path = cfg["dataset"].get("test_manifest") or cfg["dataset"]["manifest"]
+    samples = load_manifest(manifest_path)
     samples = filter_samples(
         samples,
         max_samples=max_samples,

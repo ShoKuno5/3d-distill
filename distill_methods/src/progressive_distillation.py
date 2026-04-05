@@ -173,7 +173,7 @@ class ProgressiveDistillation(BaseDistiller):
         4. Student 1 Euler step: x_t -> x_pred
         5. Loss = MSE(x_pred, x_tgt)
         """
-        x_data = batch["latent"]  # [B, 4096, 4]
+        x_data = batch["latent"]  # [B, 4096, 64]
         image_cond = batch["image_cond"]  # [B, N, D]
         B = x_data.shape[0]
         contexts = {"main": image_cond}

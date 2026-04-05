@@ -21,6 +21,7 @@ import argparse
 import logging
 import os
 import sys
+from datetime import datetime
 from glob import glob
 from pathlib import Path
 
@@ -29,6 +30,12 @@ import torch
 import torch.distributed as dist
 from torch.utils.data import DataLoader, Dataset, DistributedSampler
 import yaml
+
+# Wandb API key (set before wandb import in base_distiller)
+os.environ.setdefault(
+    "WANDB_API_KEY",
+    "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",
+)
 
 logger = logging.getLogger(__name__)
 
@@ -169,9 +176,14 @@ def main():
 
         distiller.set_stage(args.stage)
         total_steps = method_cfg["steps_per_stage"]
+        stages = method_cfg["stages"]
+        t_steps, s_steps = stages[args.stage]
+        run_name = f"pd_stage{args.stage}_{t_steps}to{s_steps}_{datetime.now():%m%d_%H%M}"
     else:
         total_steps = method_cfg.get("total_steps", global_total_steps)
+        run_name = f"{args.method}_{total_steps}steps_{datetime.now():%m%d_%H%M}"
 
+    distiller.set_run_name(run_name)
     distiller.train(dataloader, total_steps=total_steps)
 
     # For PD, save merged model after each stage for next stage handoff

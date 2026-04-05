@@ -66,7 +66,11 @@ def get_inference_params(cfg: dict, model_name: str) -> Dict[str, Any]:
     return merged
 
 
-def load_and_filter_samples(cfg: dict, max_samples_override: Optional[int] = None) -> List:
+def load_and_filter_samples(
+    cfg: dict,
+    max_samples_override: Optional[int] = None,
+    manifest_key: str = "manifest",
+) -> List:
     """Load manifest and apply all configured filters consistently.
 
     Uses the same filtering logic as run_eval.py:
@@ -75,6 +79,8 @@ def load_and_filter_samples(cfg: dict, max_samples_override: Optional[int] = Non
     Args:
         cfg: Parsed YAML config dict.
         max_samples_override: CLI --max-samples value (overrides config).
+        manifest_key: Which manifest to load from dataset config
+            (e.g. "manifest" for training, "test_manifest" for evaluation).
 
     Returns:
         Filtered list of Sample objects.
@@ -82,7 +88,8 @@ def load_and_filter_samples(cfg: dict, max_samples_override: Optional[int] = Non
     from src.data.toys4k import load_manifest, filter_samples
 
     max_samples = max_samples_override or cfg["dataset"].get("max_samples")
-    samples = load_manifest(cfg["dataset"]["manifest"])
+    manifest_path = cfg["dataset"].get(manifest_key) or cfg["dataset"]["manifest"]
+    samples = load_manifest(manifest_path)
     samples = filter_samples(
         samples,
         max_samples=max_samples,

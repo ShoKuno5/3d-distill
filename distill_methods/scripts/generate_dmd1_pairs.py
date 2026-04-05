@@ -65,6 +65,8 @@ def main():
     parser.add_argument("--config", required=True)
     parser.add_argument("--num-pairs", type=int, default=20000)
     parser.add_argument("--batch-size", type=int, default=4)
+    parser.add_argument("--shard", type=int, default=0, help="Shard index for multi-GPU")
+    parser.add_argument("--num-shards", type=int, default=1, help="Total number of shards")
     args = parser.parse_args()
 
     with open(args.config) as f:
@@ -81,7 +83,17 @@ def main():
         print(f"Already have {existing} pairs (target: {args.num_pairs}). Done.")
         return
 
-    print(f"Generating {remaining} pairs (have {existing}, target {args.num_pairs}) ...")
+    # Shard the remaining work across GPUs
+    if args.num_shards > 1:
+        shard_size = remaining // args.num_shards
+        shard_start = existing + args.shard * shard_size
+        shard_end = existing + (args.shard + 1) * shard_size if args.shard < args.num_shards - 1 else args.num_pairs
+        print(f"Shard {args.shard}/{args.num_shards}: generating pairs {shard_start}-{shard_end} ...")
+    else:
+        shard_start = existing
+        shard_end = args.num_pairs
+
+    print(f"Generating {shard_end - shard_start} pairs (have {existing}, target {args.num_pairs}) ...")
 
     # Load teacher model
     from hy3dshape.pipelines import Hunyuan3DDiTFlowMatchingPipeline
@@ -119,10 +131,10 @@ def main():
 
     guidance_scale = config["training"]["cfg"]["guidance_scale"]
     num_steps = 50
-    pair_idx = existing
+    pair_idx = shard_start
 
-    while pair_idx < args.num_pairs:
-        B = min(args.batch_size, args.num_pairs - pair_idx)
+    while pair_idx < shard_end:
+        B = min(args.batch_size, shard_end - pair_idx)
 
         # Random conditions
         cond_indices = np.random.randint(0, len(all_conds), B)
@@ -152,9 +164,9 @@ def main():
             pair_idx += 1
 
         if pair_idx % 100 == 0:
-            print(f"  Generated {pair_idx}/{args.num_pairs} pairs")
+            print(f"  Shard {args.shard}: generated {pair_idx - shard_start}/{shard_end - shard_start} pairs (global idx {pair_idx})")
 
-    print(f"Done. {pair_idx} pairs saved to {pairs_dir}")
+    print(f"Shard {args.shard} done. Generated pairs {shard_start}-{pair_idx} in {pairs_dir}")
 
 
 if __name__ == "__main__":

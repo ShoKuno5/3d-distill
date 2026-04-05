@@ -18,6 +18,11 @@ import torch.distributed as dist
 import torch.nn as nn
 from torch.nn.parallel import DistributedDataParallel as DDP
 
+try:
+    import wandb
+except ImportError:
+    wandb = None
+
 logger = logging.getLogger(__name__)
 
 # Ensure model code is importable
@@ -133,6 +138,13 @@ class BaseDistiller:
                 find_unused_parameters=False,
             )
 
+        # --- Wandb ---
+        self._wandb_enabled = False
+        wandb_cfg = config.get("wandb")
+        if wandb_cfg and wandb is not None and self.is_main:
+            self._wandb_enabled = True
+            self._wandb_cfg = wandb_cfg
+
         # Subclass sets up optimizer(s) via _setup_optimizer()
 
     # ------------------------------------------------------------------
@@ -241,6 +253,36 @@ class BaseDistiller:
             self.ema.restore(model)
 
     # ------------------------------------------------------------------
+    # Wandb
+    # ------------------------------------------------------------------
+
+    def set_run_name(self, name: str):
+        """Set wandb run name (call before train())."""
+        self._run_name = name
+
+    def _init_wandb(self):
+        """Initialize wandb run (main process only)."""
+        if not self._wandb_enabled:
+            return
+        cfg = self._wandb_cfg
+        method = self._method_name()
+        run_name = getattr(self, "_run_name", method)
+        wandb.init(
+            project=cfg["project"],
+            entity=cfg.get("entity"),
+            name=run_name,
+            group=method,
+            config=self.config,
+            finish_previous=True,
+        )
+        logger.info("Wandb initialized: project=%s, run=%s", cfg["project"], run_name)
+
+    def _finish_wandb(self):
+        """Finish wandb run."""
+        if self._wandb_enabled and wandb.run is not None:
+            wandb.finish()
+
+    # ------------------------------------------------------------------
     # Training loop
     # ------------------------------------------------------------------
 
@@ -248,6 +290,8 @@ class BaseDistiller:
         """Main training loop. Subclasses implement training_step()."""
         model = self.student.module if self.is_distributed else self.student
         model.train()
+
+        self._init_wandb()
 
         step = 0
         epoch = 0
@@ -294,6 +338,7 @@ class BaseDistiller:
         # Final save
         if self.is_main:
             self.save_checkpoint("final")
+        self._finish_wandb()
         logger.info("Training complete (%d steps).", total_steps)
 
     # Flag for methods that handle backward/step themselves (DMD2)
@@ -346,11 +391,14 @@ class BaseDistiller:
     # Logging
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _log(step: int, loss_dict: dict):
+    def _log(self, step: int, loss_dict: dict):
         parts = [f"step={step}"]
+        wandb_metrics = {"step": step}
         for k, v in loss_dict.items():
             if isinstance(v, torch.Tensor):
                 v = v.item()
             parts.append(f"{k}={v:.6f}")
+            wandb_metrics[k] = v
         logger.info("  ".join(parts))
+        if self._wandb_enabled and wandb.run is not None:
+            wandb.log(wandb_metrics, step=step)

@@ -147,13 +147,16 @@ if hasattr(vl, "cycles"):
 else:
     vl.use_denoising = True
 
-# GPU rendering
+# GPU rendering (CUDA only, disable CPU device to avoid CPU fallback)
 prefs = bpy.context.preferences.addons.get("cycles")
 if prefs:
     prefs.preferences.compute_device_type = "CUDA"
     prefs.preferences.get_devices()
     for device in prefs.preferences.devices:
-        device.use = True
+        if device.type == "CUDA":
+            device.use = True
+        else:
+            device.use = False
     scene.cycles.device = "GPU"
 
 # Enable depth pass

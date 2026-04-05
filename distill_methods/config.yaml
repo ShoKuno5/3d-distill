@@ -10,7 +10,8 @@
 dataset:
   name: toys4k
   root: /mnt/workspace/kuno/distillation/datasets/Toys4k
-  manifest: /mnt/workspace/kuno/distillation/distill_methods/manifest.csv
+  manifest: /mnt/workspace/kuno/distillation/distill_methods/manifest_train.csv
+  test_manifest: /mnt/workspace/kuno/distillation/distill_methods/manifest_test.csv
   max_samples: null
   sample_ids_file: null
   category_filter: null
@@ -128,6 +129,11 @@ models:
       guidance_scale: 1.0
       octree_resolution: 384
       lora_path: /mnt/workspace/kuno/distillation/results/distill_methods/checkpoints/dmd2/final
+
+# Wandb
+wandb:
+  project: Hunyuan3D21_distillation
+  entity: shokuno-the-university-of-tokyo
 
 # Seeds
 seeds: [42]

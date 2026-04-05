@@ -191,7 +191,7 @@ class DMD2Distillation(DMD1Distillation):
     # ------------------------------------------------------------------
 
     def _fill_replay_buffer(self, dataloader):
-        """Warmup: fill replay buffer with teacher outputs."""
+        """Warmup: fill replay buffer with real data samples for D training."""
         logger.info("Warming up replay buffer (%d samples) ...", self.replay_warmup)
         count = 0
         for batch in dataloader:
@@ -367,8 +367,8 @@ class DMD2Distillation(DMD1Distillation):
         )
         self.optimizer.step()
 
-        # Add training data to replay buffer
-        self.replay_buffer.add(x_data)
+        # Add real data to replay buffer for discriminator
+        self.replay_buffer.add(batch["latent"])
 
         return {
             "loss": loss.detach(),
