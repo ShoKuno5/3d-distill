@@ -65,11 +65,13 @@ training:
     guidance_scale: 7.5
 
 # Models to evaluate (teacher + distilled variants)
+# predictions_root and lora_path are resolved at runtime from output_root:
+#   predictions_root = {output_root}/predictions/{name}/default
+#   lora_path = {output_root}/checkpoints/{method}/final
 models:
   - name: teacher_50step
     version: "2.1"
     description: "Hunyuan3D-2.1 teacher (50-step)"
-    predictions_root: /mnt/workspace/kuno/distillation/results/distill_methods/predictions/teacher_50step/default
     mesh_filename: mesh_raw.obj
     inference_params:
       num_inference_steps: 50
@@ -79,7 +81,6 @@ models:
   - name: flashvdm
     version: "2.1-turbo"
     description: "Hunyuan3D-2.1 turbo DiT + FlashVDM (5-step)"
-    predictions_root: /mnt/workspace/kuno/distillation/results/distill_methods/predictions/flashvdm/default
     mesh_filename: mesh_raw.obj
     inference_params:
       num_inference_steps: 5
@@ -89,46 +90,42 @@ models:
   - name: pd_6step
     version: "2.1-pd"
     description: "PD distilled (6-step)"
-    predictions_root: /mnt/workspace/kuno/distillation/results/distill_methods/predictions/pd_6step/default
+    method: pd
     mesh_filename: mesh_raw.obj
     inference_params:
       num_inference_steps: 6
       guidance_scale: 1.0
       octree_resolution: 384
-      lora_path: /mnt/workspace/kuno/distillation/results/distill_methods/checkpoints/pd/final
 
   - name: cd_4step
     version: "2.1-cd"
     description: "CD distilled (4-step)"
-    predictions_root: /mnt/workspace/kuno/distillation/results/distill_methods/predictions/cd_4step/default
+    method: cd
     mesh_filename: mesh_raw.obj
     inference_params:
       num_inference_steps: 4
       guidance_scale: 1.0
       octree_resolution: 384
-      lora_path: /mnt/workspace/kuno/distillation/results/distill_methods/checkpoints/cd/final
 
   - name: dmd1_1step
     version: "2.1-dmd1"
     description: "DMD1 distilled (1-step)"
-    predictions_root: /mnt/workspace/kuno/distillation/results/distill_methods/predictions/dmd1_1step/default
+    method: dmd1
     mesh_filename: mesh_raw.obj
     inference_params:
       num_inference_steps: 1
       guidance_scale: 1.0
       octree_resolution: 384
-      lora_path: /mnt/workspace/kuno/distillation/results/distill_methods/checkpoints/dmd1/final
 
   - name: dmd2_1step
     version: "2.1-dmd2"
     description: "DMD2 distilled (1-step)"
-    predictions_root: /mnt/workspace/kuno/distillation/results/distill_methods/predictions/dmd2_1step/default
+    method: dmd2
     mesh_filename: mesh_raw.obj
     inference_params:
       num_inference_steps: 1
       guidance_scale: 1.0
       octree_resolution: 384
-      lora_path: /mnt/workspace/kuno/distillation/results/distill_methods/checkpoints/dmd2/final
 
 # Wandb
 wandb:

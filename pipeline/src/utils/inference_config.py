@@ -1,5 +1,6 @@
 """Shared helpers for inference: config loading and sample filtering."""
 
+import os
 from typing import Any, Dict, List, Optional
 
 
@@ -39,6 +40,22 @@ DEFAULTS = {
         "num_chunks": 200000,
     },
 }
+
+
+def resolve_model_paths(cfg: dict) -> dict:
+    """Fill in predictions_root and lora_path from output_root if not set."""
+    output_root = cfg.get("output_root", "")
+    for m in cfg.get("models", []):
+        if "predictions_root" not in m:
+            m["predictions_root"] = os.path.join(
+                output_root, "predictions", m["name"], "default"
+            )
+        method = m.get("method")
+        if method and "lora_path" not in m.get("inference_params", {}):
+            m.setdefault("inference_params", {})["lora_path"] = os.path.join(
+                output_root, "checkpoints", method, "final"
+            )
+    return cfg
 
 
 def get_model_config(cfg: dict, model_name: str) -> Optional[dict]:

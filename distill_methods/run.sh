@@ -1,17 +1,24 @@
 #!/usr/bin/env bash
 # Distill Methods Comparison: PD / CD / DMD1 / DMD2 on Hunyuan3D-2.1
 #
-# Full pipeline:
-#   Phase 0: Dataset preparation (manifest + encode training data)
-#   Phase 1: Training (PD stages, CD, DMD1 pairs + train, DMD2)
-#   Phase 2: Inference (teacher + FlashVDM + 4 distilled models)
-#   Phase 3: Multiview rendering + evaluation
-#   Phase 4: Report generation
+# Training + evaluation pipeline. Assumes data is already prepared:
+#   - Manifests:       distill_methods/manifest_{train,test}.csv
+#   - VAE latents:     results/distill_methods/training_data/*.npz
+#   - DMD1 pairs:      results/distill_methods/dmd1_pairs/*.npz
+#
+# Data preparation scripts (run individually before this):
+#   scripts/create_manifests.py      — train/test split
+#   scripts/render_batch.py          — input image renders
+#   scripts/prepare_training_data.py — VAE latent encoding
+#   scripts/generate_dmd1_pairs.py   — DMD1 regression pairs
+#
+# Each run gets its own timestamped directory under runs/.
 #
 # Usage:
 #   bash distill_methods/run.sh
 #   bash distill_methods/run.sh --skip-training
 #   bash distill_methods/run.sh --skip-inference --max-samples 5
+#   bash distill_methods/run.sh --run-id 20260406_0900  # resume a specific run
 
 set -euo pipefail
 
@@ -27,9 +34,8 @@ MAX_SAMPLES_ARG=""
 SKIP_TRAINING=false
 SKIP_INFERENCE=false
 SKIP_RENDERS=false
-SKIP_DATA_PREP=false
-AUTO=false
 WORKERS_ARG=""
+RUN_ID=""
 while [[ $# -gt 0 ]]; do
     case $1 in
         --max-samples=*) MAX_SAMPLES_ARG="--max-samples ${1#*=}"; shift ;;
@@ -37,10 +43,10 @@ while [[ $# -gt 0 ]]; do
         --skip-training) SKIP_TRAINING=true; shift ;;
         --skip-inference) SKIP_INFERENCE=true; shift ;;
         --skip-renders) SKIP_RENDERS=true; shift ;;
-        --skip-data-prep) SKIP_DATA_PREP=true; shift ;;
-        --auto) AUTO=true; shift ;;
         --workers=*) WORKERS_ARG="--workers ${1#*=}"; shift ;;
         --workers) WORKERS_ARG="--workers $2"; shift 2 ;;
+        --run-id=*) RUN_ID="${1#*=}"; shift ;;
+        --run-id) RUN_ID="$2"; shift 2 ;;
         *) echo "WARNING: Unknown argument: $1"; shift ;;
     esac
 done
@@ -49,155 +55,36 @@ done
 H3D_PYTHON="$PROJECT_DIR/envs/hunyuan3d-venv/bin/python"
 EVAL_PYTHON="$H3D_PYTHON"
 
-# Extract output_root from config
-OUTPUT_ROOT=$($EVAL_PYTHON -c "import yaml; cfg=yaml.safe_load(open('$CONFIG')); print(cfg['output_root'])")
-LOG_DIR="$OUTPUT_ROOT/logs"
+# Extract base output_root from config
+OUTPUT_BASE=$($EVAL_PYTHON -c "import yaml; cfg=yaml.safe_load(open('$CONFIG')); print(cfg['output_root'])")
+
+# Run directory: each run gets a unique timestamped directory
+if [ -z "$RUN_ID" ]; then
+    RUN_ID=$(date +%Y%m%d_%H%M)
+fi
+RUN_DIR="$OUTPUT_BASE/runs/$RUN_ID"
+LOG_DIR="$RUN_DIR/logs"
 mkdir -p "$LOG_DIR"
+
+# Record git branch and commit for traceability
+BRANCH=$(git -C "$PROJECT_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
+COMMIT=$(git -C "$PROJECT_DIR" rev-parse --short HEAD 2>/dev/null || echo "unknown")
+cat > "$RUN_DIR/run_info.txt" <<EOF
+run_id: $RUN_ID
+branch: $BRANCH
+commit: $COMMIT
+config: $CONFIG
+started: $(date -Iseconds)
+command: $0 $@
+EOF
 
 echo "================================================"
 echo "Distill Methods Comparison: PD / CD / DMD1 / DMD2"
 echo "================================================"
-echo "Config: $CONFIG"
-echo "Output: $OUTPUT_ROOT"
-echo ""
-
-# =========================================
-# Phase 0: Dataset preparation
-# =========================================
-if [ "$SKIP_DATA_PREP" = false ]; then
-    echo "========================================="
-    echo "Phase 0: Dataset preparation"
-    echo "========================================="
-
-    # Generate train/test manifests if they don't exist
-    MANIFEST_TRAIN="$SCRIPT_DIR/manifest_train.csv"
-    MANIFEST_TEST="$SCRIPT_DIR/manifest_test.csv"
-    if [ ! -f "$MANIFEST_TRAIN" ] || [ ! -f "$MANIFEST_TEST" ]; then
-        echo "Generating train/test manifests..."
-        $EVAL_PYTHON "$SCRIPT_DIR/scripts/create_manifests.py" \
-            --target-samples 525 --seed 42 \
-            2>&1 | tee "$LOG_DIR/create_manifests.log"
-    else
-        echo "Manifests already exist: $MANIFEST_TRAIN, $MANIFEST_TEST"
-    fi
-
-    # Render input images for new samples
-    echo "Rendering input images..."
-    $EVAL_PYTHON "$SCRIPT_DIR/scripts/render_batch.py" --num-gpus 4 \
-        2>&1 | tee "$LOG_DIR/render_batch.log"
-
-    # Encode training data (VAE latents + image conditions) — 4 GPU parallel
-    echo "Encoding training data (4 GPU shards)..."
-    ENCODE_PIDS=()
-    for SHARD in 0 1 2 3; do
-        (
-            cd "$PROJECT_DIR/models/hunyuan3d21/hy3dshape"
-            PYTHONPATH=. CUDA_VISIBLE_DEVICES=$SHARD $H3D_PYTHON \
-                $PROJECT_DIR/distill_methods/scripts/prepare_training_data.py \
-                --config "$CONFIG" $MAX_SAMPLES_ARG \
-                --shard $SHARD --num-shards 4 \
-                2>&1 | tee "$LOG_DIR/prepare_training_data_shard${SHARD}.log"
-        ) &
-        ENCODE_PIDS+=($!)
-    done
-    for PID in "${ENCODE_PIDS[@]}"; do
-        wait $PID || echo "WARNING: Encoding shard failed (PID $PID)"
-    done
-    echo "Training data encoding complete."
-    echo ""
-
-    # =========================================
-    # Phase 0b: Data verification
-    # =========================================
-    echo "========================================="
-    echo "Phase 0b: Data verification"
-    echo "========================================="
-    $EVAL_PYTHON -c "
-import csv, os, sys, glob
-
-script_dir = '$SCRIPT_DIR'
-project_dir = '$PROJECT_DIR'
-
-# Check manifests
-for name in ['manifest_train.csv', 'manifest_test.csv']:
-    path = os.path.join(script_dir, name)
-    with open(path) as f:
-        rows = list(csv.DictReader(f))
-    print(f'{name}: {len(rows)} samples')
-
-    # Verify input images exist
-    missing_img = [r['object_id'] for r in rows if not os.path.exists(r['input_image'])]
-    if missing_img:
-        print(f'  WARNING: {len(missing_img)} missing input images: {missing_img[:5]}...')
-    else:
-        print(f'  All input images exist')
-
-    # Verify point clouds exist
-    missing_pc = [r['object_id'] for r in rows if not os.path.exists(r['point_cloud'])]
-    if missing_pc:
-        print(f'  WARNING: {len(missing_pc)} missing point clouds')
-    else:
-        print(f'  All point clouds exist')
-
-    # Verify mesh files exist
-    missing_mesh = [r['object_id'] for r in rows if not os.path.exists(r['mesh_obj'])]
-    if missing_mesh:
-        print(f'  WARNING: {len(missing_mesh)} missing mesh files')
-    else:
-        print(f'  All mesh files exist')
-
-    # Category distribution
-    cats = {}
-    for r in rows:
-        cats[r['category']] = cats.get(r['category'], 0) + 1
-    print(f'  Categories: {len(cats)}, min/max per cat: {min(cats.values())}/{max(cats.values())}')
-
-# Check training data
-import yaml
-cfg = yaml.safe_load(open(os.path.join(script_dir, 'config.yaml')))
-td_dir = cfg['training']['training_data_dir']
-npz_files = glob.glob(os.path.join(td_dir, '*.npz'))
-print(f'')
-print(f'Training data (encoded): {len(npz_files)} NPZ files in {td_dir}')
-
-# Cross-check: all train manifest samples have encoded data
-train_path = os.path.join(script_dir, 'manifest_train.csv')
-with open(train_path) as f:
-    train_ids = {r['object_id'] for r in csv.DictReader(f)}
-encoded_ids = {os.path.splitext(os.path.basename(f))[0] for f in npz_files}
-missing_encoded = train_ids - encoded_ids
-if missing_encoded:
-    print(f'  WARNING: {len(missing_encoded)} train samples not yet encoded: {sorted(missing_encoded)[:5]}...')
-else:
-    print(f'  All {len(train_ids)} train samples encoded')
-
-# Quick sanity check on one NPZ file
-import numpy as np
-if npz_files:
-    d = np.load(npz_files[0])
-    print(f'  Sample NPZ keys: {list(d.keys())}')
-    print(f'  latent shape: {d[\"latent\"].shape}, image_cond shape: {d[\"image_cond\"].shape}')
-
-print('')
-print('Data preparation summary:')
-print(f'  Train: {len(train_ids)} samples')
-print(f'  Test: {len(rows)} samples')  # last loaded was test
-print(f'  Encoded: {len(npz_files)} NPZ files')
-print(f'  Status: {\"READY\" if not missing_encoded else \"INCOMPLETE\"}')" 2>&1 | tee "$LOG_DIR/data_verification.log"
-
-    echo ""
-
-    if [ "$AUTO" = false ]; then
-        echo "========================================="
-        echo "Data preparation complete. Review the verification output above."
-        echo "To continue with training, re-run with:"
-        echo "  bash distill_methods/run.sh --skip-data-prep"
-        echo "Or run the full pipeline without pause:"
-        echo "  bash distill_methods/run.sh --auto"
-        echo "========================================="
-        exit 0
-    fi
-fi
+echo "Config:  $CONFIG"
+echo "Run ID:  $RUN_ID"
+echo "Run dir: $RUN_DIR"
+echo "Branch:  $BRANCH ($COMMIT)"
 echo ""
 
 # =========================================
@@ -210,73 +97,71 @@ if [ "$SKIP_TRAINING" = false ]; then
 
     TRAIN_CMD="$PROJECT_DIR/distill_methods/src/train.py"
 
-    # --- PD: 3 stages (50->25->12->6) ---
-    echo "--- Progressive Distillation (3 stages) ---"
-    for STAGE in 0 1 2; do
-        echo "  PD Stage $STAGE ..."
-        (
-            cd "$PROJECT_DIR/models/hunyuan3d21/hy3dshape"
+    # All 4 methods run in parallel: PD(GPU0), CD(GPU1), DMD1(GPU2), DMD2(GPU3)
+
+    # --- PD: 3 stages sequential on GPU 0 ---
+    echo "--- Progressive Distillation (3 stages, GPU 0) ---"
+    (
+        cd "$PROJECT_DIR/models/hunyuan3d21/hy3dshape"
+        for STAGE in 0 1 2; do
+            echo "=== PD Stage $STAGE ===" | tee -a "$LOG_DIR/train_pd_all.log"
             PYTHONPATH=.:$PROJECT_DIR/distill_methods/src \
             CUDA_VISIBLE_DEVICES=0 $H3D_PYTHON "$TRAIN_CMD" \
                 --config "$CONFIG" --method pd --stage $STAGE \
-                2>&1 | tee "$LOG_DIR/train_pd_stage${STAGE}.log"
-        )
-    done
+                --output-dir "$RUN_DIR" \
+                2>&1 | tee "$LOG_DIR/train_pd_stage${STAGE}.log" \
+                     | tee -a "$LOG_DIR/train_pd_all.log"
+        done
+    ) &
+    PID_PD=$!
 
-    # --- CD ---
-    echo "--- Consistency Distillation ---"
+    # --- CD on GPU 1 ---
+    echo "--- Consistency Distillation (GPU 1) ---"
     (
         cd "$PROJECT_DIR/models/hunyuan3d21/hy3dshape"
         PYTHONPATH=.:$PROJECT_DIR/distill_methods/src \
         CUDA_VISIBLE_DEVICES=1 $H3D_PYTHON "$TRAIN_CMD" \
             --config "$CONFIG" --method cd \
+            --output-dir "$RUN_DIR" \
             2>&1 | tee "$LOG_DIR/train_cd.log"
     ) &
     PID_CD=$!
 
-    # --- DMD1: generate pairs first (4 GPU parallel), then train ---
-    echo "--- DMD1: Generating regression pairs (4 GPU shards) ---"
-    DMD1_PAIR_PIDS=()
-    for SHARD in 0 1 2 3; do
-        (
-            cd "$PROJECT_DIR/models/hunyuan3d21/hy3dshape"
-            PYTHONPATH=. CUDA_VISIBLE_DEVICES=$SHARD $H3D_PYTHON \
-                $PROJECT_DIR/distill_methods/scripts/generate_dmd1_pairs.py \
-                --config "$CONFIG" --shard $SHARD --num-shards 4 \
-                2>&1 | tee "$LOG_DIR/generate_dmd1_pairs_shard${SHARD}.log"
-        ) &
-        DMD1_PAIR_PIDS+=($!)
-    done
-    for PID in "${DMD1_PAIR_PIDS[@]}"; do
-        wait $PID || echo "WARNING: DMD1 pair generation shard failed (PID $PID)"
-    done
-    echo "DMD1 pair generation complete."
-
-    echo "--- DMD1: Training ---"
+    # --- DMD1 on GPU 2 ---
+    echo "--- DMD1: Training (GPU 2) ---"
     (
         cd "$PROJECT_DIR/models/hunyuan3d21/hy3dshape"
         PYTHONPATH=.:$PROJECT_DIR/distill_methods/src \
         CUDA_VISIBLE_DEVICES=2 $H3D_PYTHON "$TRAIN_CMD" \
             --config "$CONFIG" --method dmd1 \
+            --output-dir "$RUN_DIR" \
             2>&1 | tee "$LOG_DIR/train_dmd1.log"
     ) &
     PID_DMD1=$!
 
-    # --- DMD2 ---
-    echo "--- DMD2: Training ---"
+    # --- DMD2 on GPU 3 ---
+    echo "--- DMD2: Training (GPU 3) ---"
     (
         cd "$PROJECT_DIR/models/hunyuan3d21/hy3dshape"
         PYTHONPATH=.:$PROJECT_DIR/distill_methods/src \
         CUDA_VISIBLE_DEVICES=3 $H3D_PYTHON "$TRAIN_CMD" \
             --config "$CONFIG" --method dmd2 \
+            --output-dir "$RUN_DIR" \
             2>&1 | tee "$LOG_DIR/train_dmd2.log"
     ) &
     PID_DMD2=$!
 
-    # Wait for parallel jobs
-    echo "  Waiting for CD (PID $PID_CD), DMD1 ($PID_DMD1), DMD2 ($PID_DMD2) ..."
+    echo ""
+    echo "  GPU 0: PD (3 stages sequential)  [PID $PID_PD]"
+    echo "  GPU 1: CD                         [PID $PID_CD]"
+    echo "  GPU 2: DMD1                       [PID $PID_DMD1]"
+    echo "  GPU 3: DMD2                       [PID $PID_DMD2]"
+    echo ""
+
+    # Wait for all parallel jobs
     FAILED=0
-    wait $PID_CD || { echo "ERROR: CD training failed"; FAILED=1; }
+    wait $PID_PD   || { echo "ERROR: PD training failed"; FAILED=1; }
+    wait $PID_CD   || { echo "ERROR: CD training failed"; FAILED=1; }
     wait $PID_DMD1 || { echo "ERROR: DMD1 training failed"; FAILED=1; }
     wait $PID_DMD2 || { echo "ERROR: DMD2 training failed"; FAILED=1; }
 
@@ -295,12 +180,25 @@ if [ "$SKIP_INFERENCE" = false ]; then
     echo "Phase 2: Inference (6 models)"
     echo "========================================="
 
+    # Generate run-specific config with output_root pointing to this run
+    # (predictions_root and lora_path are resolved automatically by resolve_model_paths)
+    INFERENCE_CONFIG="$RUN_DIR/config_inference.yaml"
+    $EVAL_PYTHON -c "
+import yaml
+with open('$CONFIG') as f:
+    cfg = yaml.safe_load(f)
+cfg['output_root'] = '$RUN_DIR'
+with open('$INFERENCE_CONFIG', 'w') as f:
+    yaml.dump(cfg, f, default_flow_style=False, sort_keys=False)
+print('Inference config: $INFERENCE_CONFIG')
+"
+
     # Teacher 50-step (GPU 0)
     (
         cd "$PROJECT_DIR/models/hunyuan3d21/hy3dshape"
         PYTHONPATH=. CUDA_VISIBLE_DEVICES=0 $H3D_PYTHON \
             $PROJECT_DIR/distill_methods/scripts/run_inference_distilled.py \
-            --config "$CONFIG" --model-name teacher_50step $MAX_SAMPLES_ARG \
+            --config "$INFERENCE_CONFIG" --model-name teacher_50step $MAX_SAMPLES_ARG \
             2>&1 | tee "$LOG_DIR/inference_teacher.log"
     ) &
     PID_T=$!
@@ -312,7 +210,7 @@ if [ "$SKIP_INFERENCE" = false ]; then
         LD_PRELOAD=/opt/unreal-engine/usr/lib/x86_64-linux-gnu/libOpenGL.so.0 \
         CUDA_VISIBLE_DEVICES=1 $H3D_PYTHON \
             $PROJECT_DIR/pipeline/scripts/run_inference_flashvdm.py \
-            --config "$CONFIG" $MAX_SAMPLES_ARG \
+            --config "$INFERENCE_CONFIG" $MAX_SAMPLES_ARG \
             2>&1 | tee "$LOG_DIR/inference_flashvdm.log"
     ) &
     PID_FV=$!
@@ -323,7 +221,7 @@ if [ "$SKIP_INFERENCE" = false ]; then
             cd "$PROJECT_DIR/models/hunyuan3d21/hy3dshape"
             PYTHONPATH=. CUDA_VISIBLE_DEVICES=2 $H3D_PYTHON \
                 $PROJECT_DIR/distill_methods/scripts/run_inference_distilled.py \
-                --config "$CONFIG" --model-name "$MODEL" $MAX_SAMPLES_ARG \
+                --config "$INFERENCE_CONFIG" --model-name "$MODEL" $MAX_SAMPLES_ARG \
                 2>&1 | tee "$LOG_DIR/inference_${MODEL}.log"
         done
     ) &
@@ -334,7 +232,7 @@ if [ "$SKIP_INFERENCE" = false ]; then
             cd "$PROJECT_DIR/models/hunyuan3d21/hy3dshape"
             PYTHONPATH=. CUDA_VISIBLE_DEVICES=3 $H3D_PYTHON \
                 $PROJECT_DIR/distill_methods/scripts/run_inference_distilled.py \
-                --config "$CONFIG" --model-name "$MODEL" $MAX_SAMPLES_ARG \
+                --config "$INFERENCE_CONFIG" --model-name "$MODEL" $MAX_SAMPLES_ARG \
                 2>&1 | tee "$LOG_DIR/inference_${MODEL}.log"
         done
     ) &
@@ -364,8 +262,9 @@ fi
 echo "========================================="
 echo "Phase 3: Geometry evaluation"
 echo "========================================="
+EVAL_CONFIG="${INFERENCE_CONFIG:-$CONFIG}"
 cd "$PROJECT_DIR"
-$EVAL_PYTHON pipeline/scripts/run_eval.py --config "$CONFIG" $MAX_SAMPLES_ARG $WORKERS_ARG \
+$EVAL_PYTHON pipeline/scripts/run_eval.py --config "$EVAL_CONFIG" $MAX_SAMPLES_ARG $WORKERS_ARG \
     2>&1 | tee "$LOG_DIR/eval.log"
 
 echo ""
@@ -386,9 +285,10 @@ import yaml, csv, os, sys
 sys.path.insert(0, 'pipeline')
 from src.evaluation.multiview_renderer import render_all_meshes
 from src.evaluation.frechet_distance import compute_fd_for_model
-from src.utils.inference_config import load_and_filter_samples
+from src.utils.inference_config import load_and_filter_samples, resolve_model_paths
 
-cfg = yaml.safe_load(open('$CONFIG'))
+cfg = yaml.safe_load(open('$EVAL_CONFIG'))
+resolve_model_paths(cfg)
 max_s = os.environ.get('MAX_SAMPLES_VAL') or None
 max_s = int(max_s) if max_s else None
 samples = load_and_filter_samples(cfg, max_samples_override=max_s, manifest_key='test_manifest')
@@ -440,8 +340,13 @@ echo "========================================="
 echo "Phase 4: Report generation"
 echo "========================================="
 cd "$PROJECT_DIR"
-$EVAL_PYTHON pipeline/scripts/generate_report.py --config "$CONFIG" \
+$EVAL_PYTHON pipeline/scripts/generate_report.py --config "$EVAL_CONFIG" \
     2>&1 | tee "$LOG_DIR/report.log"
 
+# Record completion
+echo "completed: $(date -Iseconds)" >> "$RUN_DIR/run_info.txt"
+
 echo ""
-echo "Done! Report: $OUTPUT_ROOT/report.md"
+echo "Done!"
+echo "  Run dir: $RUN_DIR"
+echo "  Report:  $RUN_DIR/report.md"

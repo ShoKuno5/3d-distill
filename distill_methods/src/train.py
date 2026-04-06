@@ -104,6 +104,7 @@ def main():
     )
     parser.add_argument("--resume", type=str, default=None, help="Checkpoint to resume from")
     parser.add_argument("--stage", type=int, default=0, help="PD stage index (0-based)")
+    parser.add_argument("--output-dir", type=str, default=None, help="Override output_root from config")
     args = parser.parse_args()
 
     # Logging
@@ -122,6 +123,9 @@ def main():
     # Config
     with open(args.config) as f:
         config = yaml.safe_load(f)
+
+    if args.output_dir:
+        config["output_root"] = args.output_dir
 
     # Seed
     seed = config["training"]["seed"]

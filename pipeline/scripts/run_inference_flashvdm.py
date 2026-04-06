@@ -21,7 +21,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = SCRIPT_DIR.parent
 sys.path.insert(0, str(PROJECT_DIR))
 
-from src.utils.inference_config import get_model_config, get_inference_params, load_and_filter_samples
+from src.utils.inference_config import get_model_config, get_inference_params, load_and_filter_samples, resolve_model_paths
 
 
 def main():
@@ -34,6 +34,7 @@ def main():
 
     with open(args.config) as f:
         cfg = yaml.safe_load(f)
+    resolve_model_paths(cfg)
 
     samples = load_and_filter_samples(cfg, max_samples_override=args.max_samples, manifest_key="test_manifest")
 

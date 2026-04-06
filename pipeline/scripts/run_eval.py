@@ -82,8 +82,10 @@ def setup_logging(log_dir: str, level: str = "INFO") -> logging.Logger:
 
 
 def load_config(config_path: str) -> dict:
+    from src.utils.inference_config import resolve_model_paths
     with open(config_path) as f:
-        return yaml.safe_load(f)
+        cfg = yaml.safe_load(f)
+    return resolve_model_paths(cfg)
 
 
 def load_mesh_safe(mesh_path: str) -> trimesh.Trimesh:
