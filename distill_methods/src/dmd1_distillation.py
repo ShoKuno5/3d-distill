@@ -65,10 +65,20 @@ class FakeScoreAdapter:
 class RegressionPairsDataset(torch.utils.data.Dataset):
     """Pre-generated (noise, x_teacher) pairs for DMD1 regression loss."""
 
-    def __init__(self, pairs_dir: str):
-        self.files = sorted(glob(os.path.join(pairs_dir, "*.npz")))
+    def __init__(self, pairs_dir: str, num_pairs: int):
+        # Use explicit index probing to avoid stale NFS/CPFS directory cache
+        self.files = sorted([
+            os.path.join(pairs_dir, f"pair_{i:06d}.npz")
+            for i in range(num_pairs)
+            if os.path.isfile(os.path.join(pairs_dir, f"pair_{i:06d}.npz"))
+        ])
         if not self.files:
             raise FileNotFoundError(f"No pair files in {pairs_dir}")
+        if len(self.files) < num_pairs:
+            logger.warning(
+                "RegressionPairs: found %d/%d pairs (some indices missing)",
+                len(self.files), num_pairs,
+            )
         logger.info("RegressionPairs: %d pairs from %s", len(self.files), pairs_dir)
 
     def __len__(self):
@@ -134,7 +144,8 @@ class DMD1Distillation(BaseDistiller):
     def _get_pairs_batch(self):
         """Get next batch of regression pairs."""
         if self._pairs_loader is None:
-            pairs_ds = RegressionPairsDataset(self.pairs_dir)
+            num_pairs = self.config["training"]["methods"]["dmd1"]["num_pairs"]
+            pairs_ds = RegressionPairsDataset(self.pairs_dir, num_pairs)
             self._pairs_loader = torch.utils.data.DataLoader(
                 pairs_ds,
                 batch_size=self.config["training"]["batch_size"],

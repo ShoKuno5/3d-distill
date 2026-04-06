@@ -76,24 +76,21 @@ def main():
     pairs_dir = dmd1_cfg["pairs_dir"]
     os.makedirs(pairs_dir, exist_ok=True)
 
-    # Count existing
-    existing = len([f for f in os.listdir(pairs_dir) if f.endswith(".npz")])
-    remaining = args.num_pairs - existing
-    if remaining <= 0:
-        print(f"Already have {existing} pairs (target: {args.num_pairs}). Done.")
+    # Find missing indices (handles gaps from interrupted runs)
+    missing_indices = [
+        i for i in range(args.num_pairs)
+        if not os.path.isfile(os.path.join(pairs_dir, f"pair_{i:06d}.npz"))
+    ]
+    if not missing_indices:
+        print(f"All {args.num_pairs} pairs exist. Done.")
         return
 
-    # Shard the remaining work across GPUs
+    # Shard the missing indices across GPUs
     if args.num_shards > 1:
-        shard_size = remaining // args.num_shards
-        shard_start = existing + args.shard * shard_size
-        shard_end = existing + (args.shard + 1) * shard_size if args.shard < args.num_shards - 1 else args.num_pairs
-        print(f"Shard {args.shard}/{args.num_shards}: generating pairs {shard_start}-{shard_end} ...")
-    else:
-        shard_start = existing
-        shard_end = args.num_pairs
+        missing_indices = missing_indices[args.shard::args.num_shards]
 
-    print(f"Generating {shard_end - shard_start} pairs (have {existing}, target {args.num_pairs}) ...")
+    print(f"Shard {args.shard}/{args.num_shards}: generating {len(missing_indices)} missing pairs "
+          f"(range {missing_indices[0]}-{missing_indices[-1]}) ...")
 
     # Load teacher model
     from hy3dshape.pipelines import Hunyuan3DDiTFlowMatchingPipeline
@@ -131,14 +128,17 @@ def main():
 
     guidance_scale = config["training"]["cfg"]["guidance_scale"]
     num_steps = 50
-    pair_idx = shard_start
+    total = len(missing_indices)
+    generated = 0
+    i = 0
 
-    while pair_idx < shard_end:
-        B = min(args.batch_size, shard_end - pair_idx)
+    while i < total:
+        B = min(args.batch_size, total - i)
+        batch_indices = missing_indices[i:i + B]
 
         # Random conditions
         cond_indices = np.random.randint(0, len(all_conds), B)
-        image_cond = np.stack([all_conds[i] for i in cond_indices])
+        image_cond = np.stack([all_conds[ci] for ci in cond_indices])
         image_cond_t = torch.from_numpy(image_cond).to(device)
         contexts = {"main": image_cond_t}
 
@@ -156,17 +156,18 @@ def main():
         x_teacher_np = x_teacher.cpu().numpy()
         for j in range(B):
             np.savez_compressed(
-                os.path.join(pairs_dir, f"pair_{pair_idx:06d}.npz"),
+                os.path.join(pairs_dir, f"pair_{batch_indices[j]:06d}.npz"),
                 noise=noise_np[j],
                 x_teacher=x_teacher_np[j],
                 image_cond=image_cond[j],
             )
-            pair_idx += 1
+        i += B
+        generated += B
 
-        if pair_idx % 100 == 0:
-            print(f"  Shard {args.shard}: generated {pair_idx - shard_start}/{shard_end - shard_start} pairs (global idx {pair_idx})")
+        if generated % 100 < B:
+            print(f"  Shard {args.shard}: {generated}/{total} pairs generated")
 
-    print(f"Shard {args.shard} done. Generated pairs {shard_start}-{pair_idx} in {pairs_dir}")
+    print(f"Shard {args.shard} done. Generated {generated} pairs in {pairs_dir}")
 
 
 if __name__ == "__main__":
