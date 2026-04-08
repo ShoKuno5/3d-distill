@@ -99,7 +99,7 @@ def main():
     parser.add_argument("--config", required=True, help="Path to config.yaml")
     parser.add_argument(
         "--method", required=True,
-        choices=["pd", "cd", "dmd1", "dmd2"],
+        choices=["pd", "cd", "dmd1", "dmd2", "sid"],
         help="Distillation method",
     )
     parser.add_argument("--resume", type=str, default=None, help="Checkpoint to resume from")
@@ -141,12 +141,14 @@ def main():
     from consistency_distillation import ConsistencyDistillation
     from dmd1_distillation import DMD1Distillation
     from dmd2_distillation import DMD2Distillation
+    from sid_distillation import SiDDistillation
 
     method_cls = {
         "pd": ProgressiveDistillation,
         "cd": ConsistencyDistillation,
         "dmd1": DMD1Distillation,
         "dmd2": DMD2Distillation,
+        "sid": SiDDistillation,
     }[args.method]
 
     distiller = method_cls(config)

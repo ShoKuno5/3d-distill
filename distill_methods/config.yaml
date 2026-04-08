@@ -60,6 +60,10 @@ training:
       d_update_ratio: 5
       replay_buffer_size: 1024
       replay_warmup: 128
+    sid:
+      lsg_teacher_scale: 11.25   # 1.5x base CFG (7.5 * 1.5)
+      lsg_fake_scale: 0.0        # no CFG for fake score
+      grad_norm_type: adaptive    # "adaptive" or "l2"
 
   cfg:
     guidance_scale: 7.5
@@ -121,6 +125,16 @@ models:
     version: "2.1-dmd2"
     description: "DMD2 distilled (1-step)"
     method: dmd2
+    mesh_filename: mesh_raw.obj
+    inference_params:
+      num_inference_steps: 1
+      guidance_scale: 1.0
+      octree_resolution: 384
+
+  - name: sid_1step
+    version: "2.1-sid"
+    description: "SiD distilled (1-step)"
+    method: sid
     mesh_filename: mesh_raw.obj
     inference_params:
       num_inference_steps: 1

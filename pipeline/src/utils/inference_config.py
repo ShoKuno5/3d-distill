@@ -53,7 +53,7 @@ def resolve_model_paths(cfg: dict) -> dict:
         method = m.get("method")
         if method and "lora_path" not in m.get("inference_params", {}):
             m.setdefault("inference_params", {})["lora_path"] = os.path.join(
-                output_root, "checkpoints", method, "final"
+                output_root, "checkpoints", method, "step_final"
             )
     return cfg
 

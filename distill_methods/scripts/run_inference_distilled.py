@@ -33,6 +33,8 @@ def main():
     parser.add_argument("--config", required=True)
     parser.add_argument("--model-name", required=True,
                         help="Model name from config (e.g. pd_6step, cd_4step, dmd1_1step, dmd2_1step)")
+    parser.add_argument("--run-dir", default=None,
+                        help="Run directory (overrides output_root for paths)")
     parser.add_argument("--max-samples", type=int, default=None)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--check-only", action="store_true")
@@ -40,6 +42,9 @@ def main():
 
     with open(args.config) as f:
         cfg = yaml.safe_load(f)
+
+    if args.run_dir:
+        cfg["output_root"] = args.run_dir
     resolve_model_paths(cfg)
 
     samples = load_and_filter_samples(cfg, max_samples_override=args.max_samples, manifest_key="test_manifest")
@@ -90,16 +95,30 @@ def main():
         use_safetensors=False,
     )
 
-    # Apply LoRA weights if specified
+    # Apply checkpoint weights if specified
     lora_path = inf_params.get("lora_path")
     if lora_path:
-        print(f"Loading LoRA from {lora_path} ...")
-        from peft import PeftModel
+        # Detect format: LoRA adapter (adapter_config.json) vs full state_dict (model.pt)
+        adapter_config = os.path.join(lora_path, "adapter_config.json")
+        full_model_pt = os.path.join(lora_path, "model.pt")
 
-        dit = pipeline.model
-        pipeline.model = PeftModel.from_pretrained(dit, lora_path)
-        pipeline.model = pipeline.model.merge_and_unload()
-        print("LoRA merged into base model.")
+        if os.path.exists(adapter_config):
+            print(f"Loading LoRA from {lora_path} ...")
+            from peft import PeftModel
+
+            dit = pipeline.model
+            pipeline.model = PeftModel.from_pretrained(dit, lora_path)
+            pipeline.model = pipeline.model.merge_and_unload()
+            print("LoRA merged into base model.")
+        elif os.path.exists(full_model_pt):
+            print(f"Loading full state_dict from {full_model_pt} ...")
+            import torch
+
+            state_dict = torch.load(full_model_pt, map_location="cpu")
+            pipeline.model.load_state_dict(state_dict)
+            print("Full model weights loaded.")
+        else:
+            print(f"WARNING: No adapter_config.json or model.pt found in {lora_path}")
 
     num_steps = inf_params.get("num_inference_steps", 50)
     guidance_scale = inf_params.get("guidance_scale", 1.0)
