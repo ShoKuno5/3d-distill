@@ -16,7 +16,6 @@ distillation/
 │       ├── zips/       # Original zip archives
 │       └── compat/     # Symlinks preserving legacy paths for past experiments
 ├── pipeline/           # Evaluation infrastructure: scripts/, src/, docs/
-├── experiments/        # Per-experiment config + run.sh + README (copy _template/ to create new)
 ├── distill_methods/    # Distillation experiment (branch: exp/distill-methods-comparison)
 │   ├── config.yaml     # Full experiment config (dataset, training, models, metrics)
 │   ├── manifest.csv    # Sample list for this experiment
@@ -26,34 +25,27 @@ distillation/
 ├── results/            # Predictions, metrics, reports
 ├── envs/               # Runtime environments (not shared across repos)
 ├── docs/               # Project-wide documents
-└── archive/            # Past experiments
+└── archive/            # Past experiments (includes archive/experiments/)
 ```
 
-## Running Experiments
+## Past Experiments (archived)
 
-Each experiment lives on its own branch and runs via `experiments/<name>/run.sh`:
+Past experiments have been moved to `archive/experiments/`. They are records and should not be edited.
 
 ```bash
-git checkout exp/category-pilot                          # Switch to experiment branch
-bash experiments/category_pilot/run.sh                   # Run the experiment
+bash archive/experiments/toys4k_baseline/run.sh          # 4-model baseline comparison
+bash archive/experiments/resolution_sweep/run.sh         # Input resolution sweep
+bash archive/experiments/examples_qual/run.sh            # Qualitative output examples
 ```
+
+Note: `run.sh` scripts use `$SCRIPT_DIR`-relative path resolution. After the move, `PROJECT_DIR` may not resolve correctly — fix the depth if re-running.
+
+Common options: `--skip-inference`, `--workers=N`, `--max-samples N`
 
 ### Branch Convention
 
 - `main` — stable shared infrastructure (pipeline, docs, dataset layout)
 - `exp/<name>` — one branch per experiment (e.g. `exp/category-pilot`, `exp/resolution-sweep`)
-
-Experiment branches diverge from `main` and contain the experiment directory (`experiments/<name>/`) plus any experiment-specific pipeline changes. Merge infrastructure improvements back to `main`; keep experiment-specific code on the branch.
-
-### Past Experiments
-
-```bash
-bash experiments/toys4k_baseline/run.sh                  # 4-model baseline comparison
-bash experiments/resolution_sweep/run.sh                 # Input resolution sweep
-bash experiments/examples_qual/run.sh                    # Qualitative output examples
-```
-
-Common options: `--skip-inference`, `--workers=N`, `--max-samples N`
 
 ## Running Each Model (standalone)
 
@@ -98,7 +90,7 @@ PYTHONPATH=.:../../../distill_methods/src CUDA_VISIBLE_DEVICES=0,1,2,3 \
 - Never fabricate weights URLs or dataset links — only cite what exists in the repo.
 - If something is unclear, write "Unknown" rather than guessing.
 - Do not share conda/venv environments between repos (version conflicts).
-- **Do not edit past experiments**: Existing experiments in `experiments/` are records. Create a new experiment directory to change conditions. (Path-only updates for dataset reorganization are allowed.)
+- **Do not edit past experiments**: Archived experiments in `archive/experiments/` are records. Create a new experiment directory to change conditions. (Path-only updates for dataset reorganization are allowed.)
 - **Dataset paths**: New experiments reference `datasets/Toys4k/official/` and `datasets/Toys4k/renders/` directly. Past experiments use `datasets/Toys4k/compat/` symlinks.
 - **Active models**: New experiments use trellis2 and hunyuan3d21 only. Others may be re-added later.
 - **Comments in English**: All comments, docstrings, and documentation should be written in English.
