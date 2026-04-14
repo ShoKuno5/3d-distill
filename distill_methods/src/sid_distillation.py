@@ -18,6 +18,7 @@ References:
 """
 
 import logging
+import os
 
 import torch
 import torch.nn as nn
@@ -205,3 +206,34 @@ class SiDDistillation(BaseDistiller):
             "loss_sid": loss_sid.detach(),
             "loss_fake_score": loss_fake,
         }
+
+    # ------------------------------------------------------------------
+    # Checkpointing (extends base to save optimizer_fake state)
+    # ------------------------------------------------------------------
+
+    def save_checkpoint(self, step):
+        """Save base checkpoint + optimizer_fake state."""
+        super().save_checkpoint(step)
+
+        save_dir = os.path.join(self.ckpt_dir, f"step_{step}")
+
+        # Append optimizer_fake state to existing train_state.pt
+        train_state_path = os.path.join(save_dir, "train_state.pt")
+        train_state = torch.load(train_state_path, map_location="cpu")
+        train_state["optimizer_fake"] = self.optimizer_fake.state_dict()
+        torch.save(train_state, train_state_path)
+        logger.info("Saved optimizer_fake state")
+
+    def load_checkpoint(self, path: str) -> int:
+        """Load base checkpoint + optimizer_fake state."""
+        resume_step = super().load_checkpoint(path)
+
+        # Restore optimizer_fake state from train_state.pt
+        train_state_path = os.path.join(path, "train_state.pt")
+        if os.path.exists(train_state_path):
+            train_state = torch.load(train_state_path, map_location=self.device)
+            if "optimizer_fake" in train_state:
+                self.optimizer_fake.load_state_dict(train_state["optimizer_fake"])
+                logger.info("Restored optimizer_fake state")
+
+        return resume_step

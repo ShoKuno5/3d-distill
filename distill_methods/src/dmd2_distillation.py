@@ -12,6 +12,7 @@ Components:
 """
 
 import logging
+import os
 from collections import deque
 
 import torch
@@ -47,22 +48,23 @@ class FeatureDiscriminator(nn.Module):
 
 
 class ReplayBuffer:
-    """Fixed-size ring buffer of teacher outputs for GAN training."""
+    """Fixed-size ring buffer storing (latent, image_cond) pairs for GAN training."""
 
     def __init__(self, max_size: int):
         self.max_size = max_size
         self.buffer = deque(maxlen=max_size)
 
-    def add(self, x: torch.Tensor):
-        """Add a batch of samples. Stores on CPU to save GPU memory."""
+    def add(self, x: torch.Tensor, cond: torch.Tensor):
+        """Add a batch of (latent, conditioning) pairs. Stores on CPU."""
         for i in range(x.shape[0]):
-            self.buffer.append(x[i].detach().cpu())
+            self.buffer.append((x[i].detach().cpu(), cond[i].detach().cpu()))
 
-    def sample(self, batch_size: int, device: torch.device) -> torch.Tensor:
-        """Sample a random batch from the buffer."""
+    def sample(self, batch_size: int, device: torch.device):
+        """Sample a random batch from the buffer. Returns (latents, conds)."""
         indices = torch.randint(0, len(self.buffer), (batch_size,))
-        samples = torch.stack([self.buffer[i] for i in indices])
-        return samples.to(device)
+        xs = torch.stack([self.buffer[i][0] for i in indices]).to(device)
+        conds = torch.stack([self.buffer[i][1] for i in indices]).to(device)
+        return xs, conds
 
     def __len__(self):
         return len(self.buffer)
@@ -121,8 +123,15 @@ class DMD2Distillation(DMD1Distillation):
         self.replay_buffer = ReplayBuffer(dmd2_cfg["replay_buffer_size"])
         self.replay_warmup = dmd2_cfg["replay_warmup"]
 
-        # No pairs needed (DMD2 removes regression loss)
-        self.pairs_dir = None
+        # Optional regression loss (DMD1-style pairs). Enabled via config.
+        self.lambda_reg = dmd2_cfg.get("lambda_reg", 0.0)
+        if self.lambda_reg > 0:
+            dmd1_cfg = config["training"]["methods"]["dmd1"]
+            self.pairs_dir = dmd1_cfg["pairs_dir"]
+            logger.info("DMD2+regression: lambda_reg=%.3f, pairs=%s",
+                        self.lambda_reg, self.pairs_dir)
+        else:
+            self.pairs_dir = None
         self._pairs_loader = None
         self._pairs_iter = None
 
@@ -191,7 +200,7 @@ class DMD2Distillation(DMD1Distillation):
     # ------------------------------------------------------------------
 
     def _fill_replay_buffer(self, dataloader):
-        """Warmup: fill replay buffer with real data samples for D training."""
+        """Warmup: fill replay buffer with (latent, image_cond) pairs."""
         logger.info("Warming up replay buffer (%d samples) ...", self.replay_warmup)
         count = 0
         for batch in dataloader:
@@ -201,9 +210,8 @@ class DMD2Distillation(DMD1Distillation):
                 k: v.to(self.device) if isinstance(v, torch.Tensor) else v
                 for k, v in batch.items()
             }
-            x_data = batch["latent"]
-            self.replay_buffer.add(x_data)
-            count += x_data.shape[0]
+            self.replay_buffer.add(batch["latent"], batch["image_cond"])
+            count += batch["latent"].shape[0]
         logger.info("Replay buffer warmed up: %d samples", len(self.replay_buffer))
 
     # ------------------------------------------------------------------
@@ -211,55 +219,67 @@ class DMD2Distillation(DMD1Distillation):
     # ------------------------------------------------------------------
 
     def _train_discriminator(self, batch: dict):
-        """Update discriminator with non-saturating GAN loss (paper Eq. 4).
+        """Update discriminator + mu_fake with non-saturating GAN loss.
 
-        Features extracted via mu_fake (fake score adapter), NOT teacher.
-        Paper: "we add a classification branch on top of the bottleneck
-        of the fake diffusion denoiser."
+        Per paper Section 4.6: mu_fake is trained with BOTH DSM (in
+        _train_fake_score) AND the GAN classification loss (here).
+        Features extracted via mu_fake WITH gradients so D loss also
+        improves mu_fake's feature representations.
+
+        Bug fixes vs original implementation:
+        - Real samples now use their OWN conditioning from the replay buffer
+          (previously used the current batch's conditioning — shortcut learning).
+        - mu_fake receives gradients from D loss (previously blocked by no_grad).
         """
         B = batch["latent"].shape[0]
         image_cond = batch["image_cond"]
-        contexts = {"main": image_cond}
+        contexts_fake = {"main": image_cond}
 
-        # Real samples from replay buffer
-        x_real = self.replay_buffer.sample(B, self.device)
+        # Real samples + their conditioning from replay buffer (Bug 1 fix)
+        x_real, cond_real = self.replay_buffer.sample(B, self.device)
+        contexts_real = {"main": cond_real}
 
-        # Fake samples from student (detached)
+        # Fake samples from student (detached — no grad to student here)
         noise = torch.randn_like(batch["latent"])
         with torch.no_grad():
             self.fake_score_adapter.activate_student()
             with torch.autocast("cuda", dtype=torch.bfloat16):
                 v_student = self.student_forward(
-                    noise, torch.zeros(B, device=self.device), contexts,
+                    noise, torch.zeros(B, device=self.device), contexts_fake,
                 )
             x_fake = self.euler_step(noise, v_student, torch.ones(B, device=self.device))
 
-        # Extract features via mu_fake at random timestep (paper Section 4.3)
+        # Extract features via mu_fake WITH gradients (Bug 2 fix).
+        # Gradients flow through mu_fake so D loss also trains mu_fake's
+        # feature representations, matching the paper's integrated design.
         t_d = self.sample_t(B, self.device)
         self.fake_score_adapter.activate_fake_score()
-        with torch.no_grad():
-            with torch.autocast("cuda", dtype=torch.bfloat16):
-                self.student_forward(
-                    self.diffuse(x_real, t_d, torch.randn_like(x_real)),
-                    t_d, contexts,
-                )
-            feat_real = self._features.get("student")
 
-            with torch.autocast("cuda", dtype=torch.bfloat16):
-                self.student_forward(
-                    self.diffuse(x_fake, t_d, torch.randn_like(x_fake)),
-                    t_d, contexts,
-                )
-            feat_fake = self._features.get("student")
+        self.optimizer_fake.zero_grad()
+
+        with torch.autocast("cuda", dtype=torch.bfloat16):
+            self.student_forward(
+                self.diffuse(x_real, t_d, torch.randn_like(x_real)),
+                t_d, contexts_real,  # Bug 1 fix: correct conditioning
+            )
+        feat_real = self._features.get("student")
+
+        with torch.autocast("cuda", dtype=torch.bfloat16):
+            self.student_forward(
+                self.diffuse(x_fake.detach(), t_d, torch.randn_like(x_fake)),
+                t_d, contexts_fake,
+            )
+        feat_fake = self._features.get("student")
+
         self.fake_score_adapter.activate_student()
 
         if feat_real is None or feat_fake is None:
             logger.warning("Feature hook failed, skipping D update")
             return torch.tensor(0.0, device=self.device)
 
-        # Non-saturating GAN loss (paper Eq. 4, not hinge)
-        d_real = self.discriminator(feat_real.detach().float())
-        d_fake = self.discriminator(feat_fake.detach().float())
+        # Non-saturating GAN loss (paper Eq. 4)
+        d_real = self.discriminator(feat_real.float())
+        d_fake = self.discriminator(feat_fake.float())
         loss_d = (
             nn.functional.softplus(-d_real).mean()
             + nn.functional.softplus(d_fake).mean()
@@ -268,6 +288,13 @@ class DMD2Distillation(DMD1Distillation):
         self.optimizer_d.zero_grad()
         loss_d.backward()
         self.optimizer_d.step()
+
+        # Bug 2 fix: also step mu_fake with GAN classification gradients
+        torch.nn.utils.clip_grad_norm_(
+            self.fake_score_adapter.fake_score_params(),
+            self.config["training"]["gradient_clip"],
+        )
+        self.optimizer_fake.step()
 
         return loss_d.detach()
 
@@ -360,7 +387,25 @@ class DMD2Distillation(DMD1Distillation):
                 d_gen = self.discriminator(feat_gen.float())
                 loss_gan = nn.functional.softplus(-d_gen).mean()
 
-        loss = loss_distill + self.lambda_gan * loss_gan
+        # Optional regression loss (reuse DMD1's pairs infrastructure)
+        loss_regress = torch.tensor(0.0, device=self.device)
+        if self.lambda_reg > 0 and self.pairs_dir is not None:
+            pairs_batch = self._get_pairs_batch()
+            pair_noise = pairs_batch["noise"]
+            pair_teacher = pairs_batch["x_teacher"]
+            pair_cond = pairs_batch["image_cond"]
+            pair_contexts = {"main": pair_cond}
+            with torch.autocast("cuda", dtype=torch.bfloat16):
+                v_reg = self.student_forward(
+                    pair_noise, torch.zeros(pair_noise.shape[0], device=self.device),
+                    pair_contexts,
+                )
+            x_reg = self.euler_step(
+                pair_noise, v_reg, torch.ones(pair_noise.shape[0], device=self.device),
+            )
+            loss_regress = nn.functional.mse_loss(x_reg, pair_teacher)
+
+        loss = loss_distill + self.lambda_gan * loss_gan + self.lambda_reg * loss_regress
 
         self.optimizer.zero_grad()
         # Clear fake_score grads to prevent stale GAN gradients from
@@ -374,12 +419,13 @@ class DMD2Distillation(DMD1Distillation):
         self.optimizer.step()
 
         # Add real data to replay buffer for discriminator
-        self.replay_buffer.add(batch["latent"])
+        self.replay_buffer.add(batch["latent"], batch["image_cond"])
 
         return {
             "loss": loss.detach(),
             "loss_distill": loss_distill.detach(),
             "loss_gan": loss_gan.detach() if isinstance(loss_gan, torch.Tensor) else loss_gan,
+            "loss_regress": loss_regress.detach() if isinstance(loss_regress, torch.Tensor) else loss_regress,
             "loss_d": loss_d,
             "loss_fake_score": loss_fake,
         }
@@ -392,3 +438,53 @@ class DMD2Distillation(DMD1Distillation):
         """Override to warm up replay buffer before training."""
         self._fill_replay_buffer(dataloader)
         super().train(dataloader, total_steps, resume_step=resume_step)
+
+    # ------------------------------------------------------------------
+    # Checkpointing (extends base to save discriminator + extra optimizers)
+    # ------------------------------------------------------------------
+
+    def save_checkpoint(self, step):
+        """Save base checkpoint + discriminator weights and all optimizer states."""
+        super().save_checkpoint(step)
+
+        save_dir = os.path.join(self.ckpt_dir, f"step_{step}")
+
+        # Save discriminator weights
+        disc_path = os.path.join(save_dir, "discriminator.pt")
+        torch.save(self.discriminator.state_dict(), disc_path)
+        logger.info("Saved discriminator weights: %s", disc_path)
+
+        # Append extra optimizer states to existing train_state.pt
+        train_state_path = os.path.join(save_dir, "train_state.pt")
+        train_state = torch.load(train_state_path, map_location="cpu")
+        train_state["optimizer_d"] = self.optimizer_d.state_dict()
+        train_state["optimizer_fake"] = self.optimizer_fake.state_dict()
+        torch.save(train_state, train_state_path)
+        logger.info("Saved optimizer_d and optimizer_fake states")
+
+    def load_checkpoint(self, path: str) -> int:
+        """Load base checkpoint + discriminator weights and extra optimizer states."""
+        resume_step = super().load_checkpoint(path)
+
+        # Restore discriminator weights (backward compat: skip if missing)
+        disc_path = os.path.join(path, "discriminator.pt")
+        if os.path.exists(disc_path):
+            self.discriminator.load_state_dict(
+                torch.load(disc_path, map_location=self.device)
+            )
+            logger.info("Loaded discriminator weights from %s", disc_path)
+        else:
+            logger.warning("No discriminator.pt found in %s, using fresh weights", path)
+
+        # Restore extra optimizer states from train_state.pt
+        train_state_path = os.path.join(path, "train_state.pt")
+        if os.path.exists(train_state_path):
+            train_state = torch.load(train_state_path, map_location=self.device)
+            if "optimizer_d" in train_state:
+                self.optimizer_d.load_state_dict(train_state["optimizer_d"])
+                logger.info("Restored optimizer_d state")
+            if "optimizer_fake" in train_state:
+                self.optimizer_fake.load_state_dict(train_state["optimizer_fake"])
+                logger.info("Restored optimizer_fake state")
+
+        return resume_step

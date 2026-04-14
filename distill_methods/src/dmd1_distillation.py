@@ -102,6 +102,9 @@ class DMD1Distillation(BaseDistiller):
         dmd1_cfg = config["training"]["methods"]["dmd1"]
         lora_cfg = config["training"]["model"]["lora"]
         self.lambda_reg = dmd1_cfg["lambda_reg"]
+        self.num_inference_steps = dmd1_cfg.get("num_inference_steps", 1)
+        if self.num_inference_steps > 1:
+            logger.info("DMD1 multi-step: K=%d", self.num_inference_steps)
 
         # Setup fake score adapter on the student model
         model = self.student.module if self.is_distributed else self.student
@@ -166,6 +169,27 @@ class DMD1Distillation(BaseDistiller):
                 for k, v in batch.items()}
 
     # ------------------------------------------------------------------
+    # Multi-step generation
+    # ------------------------------------------------------------------
+
+    def _student_generate(self, noise: torch.Tensor, contexts: dict) -> torch.Tensor:
+        """Generate sample via K-step Euler from t=0 (noise) to t=1 (data).
+
+        K is controlled by config `dmd1.num_inference_steps` (default 1).
+        When K=1, this is equivalent to the original single-step generation.
+        """
+        K = self.num_inference_steps
+        dt = 1.0 / K
+        x_t = noise
+        B = noise.shape[0]
+        with torch.autocast("cuda", dtype=torch.bfloat16):
+            for i in range(K):
+                t_i = torch.full((B,), i * dt, device=self.device)
+                v = self.student_forward(x_t, t_i, contexts)
+                x_t = x_t + dt * v
+        return x_t
+
+    # ------------------------------------------------------------------
     # Fake score training
     # ------------------------------------------------------------------
 
@@ -183,13 +207,10 @@ class DMD1Distillation(BaseDistiller):
 
         noise = torch.randn_like(x_data)
 
-        # Student 1-step generation (no grad)
+        # Student K-step generation (no grad)
         with torch.no_grad():
             self.fake_score_adapter.activate_student()
-            with torch.autocast("cuda", dtype=torch.bfloat16):
-                v_student = self.student_forward(noise, torch.zeros(B, device=self.device), contexts)
-            # x_fake = noise + 1.0 * v_student (full step from t=0 to t=1)
-            x_fake = self.euler_step(noise, v_student, torch.ones(B, device=self.device))
+            x_fake = self._student_generate(noise, contexts)
 
         # Diffuse x_fake
         t_probe = self.sample_t(B, self.device)
@@ -237,13 +258,9 @@ class DMD1Distillation(BaseDistiller):
         contexts = {"main": image_cond}
         noise = torch.randn_like(x_data)
 
-        # Student 1-step generation
+        # Student K-step generation (with grad for KL + regression backprop)
         self.fake_score_adapter.activate_student()
-        with torch.autocast("cuda", dtype=torch.bfloat16):
-            v_student = self.student_forward(
-                noise, torch.zeros(B, device=self.device), contexts,
-            )
-        x_gen = self.euler_step(noise, v_student, torch.ones(B, device=self.device))
+        x_gen = self._student_generate(noise, contexts)
 
         # KL gradient via score difference (paper Eq. 7, Algorithm 2)
         t_kl = self.sample_t(B, self.device)
@@ -283,14 +300,7 @@ class DMD1Distillation(BaseDistiller):
         pair_cond = pairs_batch["image_cond"]
         pair_contexts = {"main": pair_cond}
 
-        with torch.autocast("cuda", dtype=torch.bfloat16):
-            v_reg = self.student_forward(
-                pair_noise, torch.zeros(pair_noise.shape[0], device=self.device),
-                pair_contexts,
-            )
-        x_reg = self.euler_step(
-            pair_noise, v_reg, torch.ones(pair_noise.shape[0], device=self.device),
-        )
+        x_reg = self._student_generate(pair_noise, pair_contexts)
         loss_regress = nn.functional.mse_loss(x_reg, pair_teacher)
 
         # Total student loss
@@ -310,3 +320,34 @@ class DMD1Distillation(BaseDistiller):
             "loss_regress": loss_regress.detach(),
             "loss_fake_score": loss_fake,
         }
+
+    # ------------------------------------------------------------------
+    # Checkpointing (extends base to save optimizer_fake state)
+    # ------------------------------------------------------------------
+
+    def save_checkpoint(self, step):
+        """Save base checkpoint + optimizer_fake state."""
+        super().save_checkpoint(step)
+
+        save_dir = os.path.join(self.ckpt_dir, f"step_{step}")
+
+        # Append optimizer_fake state to existing train_state.pt
+        train_state_path = os.path.join(save_dir, "train_state.pt")
+        train_state = torch.load(train_state_path, map_location="cpu")
+        train_state["optimizer_fake"] = self.optimizer_fake.state_dict()
+        torch.save(train_state, train_state_path)
+        logger.info("Saved optimizer_fake state")
+
+    def load_checkpoint(self, path: str) -> int:
+        """Load base checkpoint + optimizer_fake state."""
+        resume_step = super().load_checkpoint(path)
+
+        # Restore optimizer_fake state from train_state.pt
+        train_state_path = os.path.join(path, "train_state.pt")
+        if os.path.exists(train_state_path):
+            train_state = torch.load(train_state_path, map_location=self.device)
+            if "optimizer_fake" in train_state:
+                self.optimizer_fake.load_state_dict(train_state["optimizer_fake"])
+                logger.info("Restored optimizer_fake state")
+
+        return resume_step
