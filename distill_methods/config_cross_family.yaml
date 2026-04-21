@@ -1,0 +1,205 @@
+# Cross-family Toys4k Benchmark
+# ==============================
+# Inference-evaluation across 9 models spanning 3 backbone families:
+#   - Hunyuan3D-2.1: teacher_50step, flashvdm, pd_6step, cd_4step, dmd1_1step, dmd2_1step
+#   - TRELLIS v1:   trellis_25step (teacher), mdt_dist_2step
+#   - TRELLIS 2:    trellis2_teacher (reference baseline)
+#
+# All distilled LoRA checkpoints point to absolute paths of existing trained weights.
+# Output goes to results/distill_methods/runs/<RUN_ID>/ via the orchestrator script.
+#
+# Usage:
+#   bash distill_methods/scripts/run_cross_family_benchmark.sh
+
+# Dataset
+dataset:
+  name: toys4k
+  root: /mnt/workspace/kuno/distillation/datasets/Toys4k
+  manifest: /mnt/workspace/kuno/distillation/distill_methods/manifest_train.csv
+  test_manifest: /mnt/workspace/kuno/distillation/distill_methods/manifest_test.csv
+  max_samples: null
+  sample_ids_file: null
+  category_filter: null
+
+# Training (unused for this bench, kept for config schema compatibility)
+training:
+  training_data_dir: /mnt/workspace/kuno/distillation/results/distill_methods/training_data
+  batch_size: 4
+  num_workers: 4
+  seed: 42
+  bf16: true
+  model:
+    pretrained: tencent/Hunyuan3D-2.1
+    z_scale_factor: 1.0
+    lora:
+      rank: 64
+      alpha: 64
+      target_modules: [to_q, to_k, to_v, to_out.0]
+
+# Models to evaluate (9 models, 3 families)
+# Absolute lora_path values refer to existing trained checkpoints across prior runs.
+models:
+  # === Hunyuan3D-2.1 family ===
+  - name: teacher_50step
+    version: "2.1"
+    description: "Hunyuan3D-2.1 teacher (50-step)"
+    mesh_filename: mesh_raw.obj
+    inference_params:
+      num_inference_steps: 50
+      guidance_scale: 5.0
+      octree_resolution: 384
+
+  - name: flashvdm
+    version: "2.1-turbo"
+    description: "Hunyuan3D-2.1 turbo DiT + FlashVDM (5-step)"
+    mesh_filename: mesh_raw.obj
+    inference_params:
+      num_inference_steps: 5
+      octree_resolution: 380
+      num_chunks: 200000
+
+  - name: pd_6step
+    version: "2.1-pd"
+    description: "PD distilled (6-step)"
+    method: pd
+    mesh_filename: mesh_raw.obj
+    inference_params:
+      num_inference_steps: 6
+      guidance_scale: 1.0
+      octree_resolution: 384
+      lora_path: /mnt/workspace/kuno/distillation/results/distill_methods/runs/20260406_1131/checkpoints/pd/step_final
+
+  - name: cd_4step
+    version: "2.1-cd"
+    description: "CD distilled (4-step)"
+    method: cd
+    mesh_filename: mesh_raw.obj
+    inference_params:
+      num_inference_steps: 4
+      guidance_scale: 1.0
+      octree_resolution: 384
+      lora_path: /mnt/workspace/kuno/distillation/results/distill_methods/runs/20260406_1131/checkpoints/cd/step_final
+
+  - name: dmd1_1step
+    version: "2.1-dmd1"
+    description: "DMD1 distilled (1-step, K=1 from multistep fix run)"
+    method: dmd1
+    mesh_filename: mesh_raw.obj
+    inference_params:
+      num_inference_steps: 1
+      guidance_scale: 1.0
+      octree_resolution: 384
+      lora_path: /mnt/workspace/kuno/distillation/results/distill_methods/runs/20260414_dmd1_multistep/k1/checkpoints/dmd1/step_15000
+
+  - name: dmd2_1step
+    version: "2.1-dmd2"
+    description: "DMD2 distilled (1-step, Exp-1: bug1+2 fixed canonical)"
+    method: dmd2
+    mesh_filename: mesh_raw.obj
+    inference_params:
+      num_inference_steps: 1
+      guidance_scale: 1.0
+      octree_resolution: 384
+      lora_path: /mnt/workspace/kuno/distillation/results/distill_methods/runs/20260414_dmd2_fix/exp1/checkpoints/dmd2/step_15000
+
+  # === TRELLIS v1 family ===
+  - name: trellis
+    version: "v1-teacher"
+    description: "TRELLIS v1 teacher (native 25+25-step)"
+    method: trellis
+    mesh_filename: mesh_raw.obj
+    inference_params:
+      ss_steps: 25
+      slat_steps: 25
+      ss_cfg: 5.0
+      slat_cfg: 5.0
+
+  - name: mdt_dist
+    version: "v1-mdt-dist"
+    description: "MDT-Dist distilled from TRELLIS v1 (2+2-step, weights swap)"
+    method: mdt_dist
+    mesh_filename: mesh_raw.obj
+    inference_params:
+      ss_steps: 2
+      slat_steps: 2
+      ss_cfg: 5.0
+      slat_cfg: 1.0
+      ss_cfg_interval: [0.5, 1.0]
+      slat_cfg_interval: [0.5, 1.0]
+      rescale_t: 1.0
+      sigma_min: 1.0e-5
+      ss_ckpt: /mnt/workspace/kuno/distillation/models/mdt_dist/ckpts/ss_flow_img_dit_L_16l8_fp16.pt
+      slat_ckpt: /mnt/workspace/kuno/distillation/models/mdt_dist/ckpts/slat_flow_img_dit_L_64l8p2_fp16.pt
+
+  # === TRELLIS 2 family (reference) ===
+  - name: trellis2
+    version: "2.0"
+    description: "TRELLIS 2 teacher (default 1024_cascade pipeline)"
+    method: trellis2
+    mesh_filename: mesh_raw.obj
+    inference_params:
+      pipeline_type: "1024_cascade"
+
+# Seeds
+seeds: [42]
+
+# Output (overridden at runtime by orchestrator to runs/<RUN_ID>/)
+output_root: /mnt/workspace/kuno/distillation/results/distill_methods
+
+# Normalization
+normalization:
+  gt_method: unit_sphere
+  pred_method: unit_sphere
+
+# Mesh cleaning
+cleaning:
+  remove_nan: true
+  remove_inf: true
+  remove_degenerate_faces: true
+  remove_unreferenced_vertices: true
+  remove_tiny_components: true
+  tiny_component_threshold: 0.01
+
+# Point sampling
+sampling:
+  alignment_points: 100000
+  eval_points: 16384
+
+# Alignment (scale_clamp exposed for fairness diagnostic sensitivity runs)
+alignment:
+  track_a:
+    method: similarity_icp
+    initial_rotations: 24
+    icp_max_iterations: 100
+    allow_reflection: false
+    allow_nonuniform_scale: false
+    scale_clamp: [0.5, 2.0]
+  track_b:
+    method: scale_only
+    allow_rotation: false
+
+# Metrics
+metrics:
+  chamfer_distance:
+    variant: L2_squared
+  f_score:
+    thresholds: [0.01, 0.02]
+  hausdorff: true
+  mesh_quality_stats: true
+  bootstrap_ci:
+    enabled: true
+    n_bootstrap: 1000
+    confidence: 0.95
+  frechet_distance:
+    enabled: true
+    models: [inception_v3, dinov2]
+    multiview:
+      azimuths: [0, 90, 180, 270]
+      elevation: 30
+      resolution: 512
+
+# Execution
+execution:
+  skip_existing: true
+  continue_on_failure: true
+  log_level: INFO
