@@ -216,11 +216,17 @@ def evaluate_one(
 
         # === Track A: Similarity ICP ===
         t_align_start = time.time()
+        scale_clamp = align_cfg["track_a"].get("scale_clamp")
+        icp_kwargs = dict(
+            max_iterations=align_cfg["track_a"]["icp_max_iterations"],
+            n_initial_rotations=align_cfg["track_a"]["initial_rotations"],
+        )
+        if scale_clamp is not None:
+            icp_kwargs["scale_clamp"] = tuple(scale_clamp)
         track_a_result = align_similarity_icp(
             align_pts_norm,
             gt_pts_norm,
-            max_iterations=align_cfg["track_a"]["icp_max_iterations"],
-            n_initial_rotations=align_cfg["track_a"]["initial_rotations"],
+            **icp_kwargs,
         )
         t_align = time.time() - t_align_start
 
@@ -335,6 +341,10 @@ def main():
                         help="Skip Track B evaluation")
     parser.add_argument("--workers", type=int, default=None,
                         help="Number of parallel workers (default: CPU count)")
+    parser.add_argument("--scale-clamp-min", type=float, default=None,
+                        help="Override Track A scale clamp lower bound (default from config)")
+    parser.add_argument("--scale-clamp-max", type=float, default=None,
+                        help="Override Track A scale clamp upper bound (default from config)")
     args = parser.parse_args()
 
     cfg = load_config(args.config)
@@ -373,6 +383,14 @@ def main():
     clean_cfg = cfg["cleaning"]
     align_cfg = cfg["alignment"]
     continue_on_failure = cfg.get("execution", {}).get("continue_on_failure", True)
+
+    # CLI override: scale_clamp for Track A (fairness sensitivity runs)
+    if args.scale_clamp_min is not None or args.scale_clamp_max is not None:
+        current = align_cfg["track_a"].get("scale_clamp", [0.5, 2.0])
+        s_min = args.scale_clamp_min if args.scale_clamp_min is not None else current[0]
+        s_max = args.scale_clamp_max if args.scale_clamp_max is not None else current[1]
+        align_cfg["track_a"]["scale_clamp"] = [s_min, s_max]
+        logger.info(f"Track A scale_clamp overridden to [{s_min}, {s_max}]")
 
     # --- Determine worker count ---
     n_workers = args.workers

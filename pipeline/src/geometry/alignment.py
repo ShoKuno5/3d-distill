@@ -4,7 +4,8 @@ Track A: similarity ICP (rotation + translation + uniform scale)
 Track B: center + uniform scale only (no rotation alignment)
 
 Reflection is always forbidden.
-Scale is clamped to [0.5, 2.0] to prevent degenerate collapse.
+Scale is clamped to `scale_clamp` (default (0.5, 2.0)) to prevent degenerate collapse.
+Pass a looser clamp such as (0.3, 3.0) for fairness sensitivity runs.
 
 Performance: uses coarse subsampling (5K pts) for the 24-start search,
 then refines the best result on the full dense cloud.
@@ -18,9 +19,8 @@ from scipy.spatial import cKDTree
 
 # Number of points used for the coarse ICP search phase
 _COARSE_SEARCH_POINTS = 5000
-# Scale bounds: since both clouds are unit-sphere normalized, scale should be ~1
-_SCALE_MIN = 0.5
-_SCALE_MAX = 2.0
+# Default scale bounds: since both clouds are unit-sphere normalized, scale should be ~1
+DEFAULT_SCALE_CLAMP = (0.5, 2.0)
 
 
 @dataclass
@@ -103,6 +103,7 @@ def _similarity_icp(
     target: np.ndarray,
     max_iterations: int = 100,
     tolerance: float = 1e-6,
+    scale_clamp: tuple[float, float] = DEFAULT_SCALE_CLAMP,
 ) -> tuple[np.ndarray, np.ndarray, float, float, int]:
     """Run similarity ICP (rotation + translation + uniform scale).
 
@@ -119,20 +120,21 @@ def _similarity_icp(
     s_acc = 1.0
     prev_cost = float("inf")
     n_iter = 0
+    s_min, s_max = scale_clamp
 
     target_tree = cKDTree(target)
 
     for it in range(max_iterations):
         dists, idx = target_tree.query(src)
         matched_target = target[idx]
-        R_step, t_step, s_step = _umeyama(src, matched_target)
+        R_step, t_step, s_step = _umeyama(src, matched_target, scale_clamp=scale_clamp)
 
         # Clamp cumulative scale
         new_s_acc = s_step * s_acc
-        if new_s_acc < _SCALE_MIN:
-            s_step = _SCALE_MIN / s_acc
-        elif new_s_acc > _SCALE_MAX:
-            s_step = _SCALE_MAX / s_acc
+        if new_s_acc < s_min:
+            s_step = s_min / s_acc
+        elif new_s_acc > s_max:
+            s_step = s_max / s_acc
 
         src = s_step * (R_step @ src.T).T + t_step
 
@@ -154,7 +156,11 @@ def _similarity_icp(
     return R_acc, t_acc, s_acc, final_cost, n_iter
 
 
-def _umeyama(source: np.ndarray, target: np.ndarray) -> tuple[np.ndarray, np.ndarray, float]:
+def _umeyama(
+    source: np.ndarray,
+    target: np.ndarray,
+    scale_clamp: tuple[float, float] = DEFAULT_SCALE_CLAMP,
+) -> tuple[np.ndarray, np.ndarray, float]:
     """Umeyama alignment: (R, t, s) minimizing ||target - (s*R*source + t)||^2."""
     mu_s = source.mean(axis=0)
     mu_t = target.mean(axis=0)
@@ -174,7 +180,7 @@ def _umeyama(source: np.ndarray, target: np.ndarray) -> tuple[np.ndarray, np.nda
     s = np.trace(np.diag(D) @ S) / var_s if var_s > 1e-12 else 1.0
 
     # Clamp per-step scale
-    s = max(_SCALE_MIN, min(_SCALE_MAX, s))
+    s = max(scale_clamp[0], min(scale_clamp[1], s))
 
     t = mu_t - s * (R @ mu_s)
 
@@ -186,6 +192,7 @@ def align_similarity_icp(
     gt_pts: np.ndarray,
     max_iterations: int = 100,
     n_initial_rotations: int = 24,
+    scale_clamp: tuple[float, float] = DEFAULT_SCALE_CLAMP,
 ) -> AlignmentResult:
     """Multi-start similarity ICP alignment (Track A).
 
@@ -198,6 +205,7 @@ def align_similarity_icp(
         gt_pts: (M, 3) GT point cloud (in canonical frame).
         max_iterations: Max ICP iterations per start.
         n_initial_rotations: Number of initial rotations (24 for cube group).
+        scale_clamp: (min, max) bounds on uniform scale factor during ICP.
 
     Returns:
         AlignmentResult with best transform.
@@ -217,7 +225,7 @@ def align_similarity_icp(
     for idx, R_init in enumerate(rotations):
         rotated = (R_init @ pred_coarse.T).T
         R_icp, t_icp, s_icp, cost, _ = _similarity_icp(
-            rotated, gt_coarse, max_iterations=50
+            rotated, gt_coarse, max_iterations=50, scale_clamp=scale_clamp
         )
         R_total = R_icp @ R_init
         if np.linalg.det(R_total) < 0:
@@ -232,7 +240,7 @@ def align_similarity_icp(
     # Phase 2: Refine on full dense cloud from the best coarse start
     pred_init = best_coarse_s * (best_coarse_R @ pred_pts.T).T + best_coarse_t
     R_refine, t_refine, s_refine, cost_refine, n_iter = _similarity_icp(
-        pred_init, gt_pts, max_iterations=max_iterations
+        pred_init, gt_pts, max_iterations=max_iterations, scale_clamp=scale_clamp
     )
 
     # Compose: refine ∘ coarse
@@ -241,7 +249,7 @@ def align_similarity_icp(
     t_final = s_refine * (R_refine @ best_coarse_t) + t_refine
 
     # Clamp composed scale to prevent degenerate collapse across phases
-    s_final = max(_SCALE_MIN, min(_SCALE_MAX, s_final))
+    s_final = max(scale_clamp[0], min(scale_clamp[1], s_final))
 
     if np.linalg.det(R_final) < 0:
         R_final = best_coarse_R

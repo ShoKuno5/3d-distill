@@ -41,7 +41,7 @@ def main():
     with open(args.config) as f:
         cfg = yaml.safe_load(f)
 
-    samples = load_and_filter_samples(cfg, max_samples_override=args.max_samples)
+    samples = load_and_filter_samples(cfg, max_samples_override=args.max_samples, manifest_key="test_manifest")
 
     # Find trellis model config
     model_cfg = get_model_config(cfg, "trellis")

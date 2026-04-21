@@ -51,7 +51,7 @@ def main():
     if args.sample_ids:
         cfg["dataset"]["sample_ids_file"] = args.sample_ids
 
-    samples = load_and_filter_samples(cfg, max_samples_override=args.max_samples)
+    samples = load_and_filter_samples(cfg, max_samples_override=args.max_samples, manifest_key="test_manifest")
 
     # Find trellis2 model config
     model_cfg = get_model_config(cfg, "trellis2")
