@@ -257,6 +257,32 @@ def main():
             report.append(f"| {model} | {avg_total:.2f} | {avg_align:.2f} | {avg_met:.2f} |")
         report.append("")
 
+    # --- Frechet Distance ---
+    fd_data = load_csv(os.path.join(metrics_dir, "frechet_distance.csv"))
+    if fd_data:
+        report.append("## Frechet Distance (Distributional Quality)")
+        report.append("")
+        report.append("Computed on 4-view renders of predicted vs GT meshes.")
+        report.append("")
+
+        # Group by feature extractor
+        feat_models = sorted(set(r["feature_extractor"] for r in fd_data))
+        for feat_model in feat_models:
+            rows = [r for r in fd_data if r["feature_extractor"] == feat_model]
+            display_name = {
+                "inception_v3": "FD (InceptionV3)",
+                "dinov2": "FD (DINOv2)",
+            }.get(feat_model, f"FD ({feat_model})")
+
+            report.append(f"### {display_name}")
+            report.append("")
+            report.append(f"| Model | {display_name} |")
+            report.append("|-------|{:-^{w}}|".format("", w=len(display_name) + 2))
+            for r in sorted(rows, key=lambda x: float(x["frechet_distance"])):
+                fd_val = float(r["frechet_distance"])
+                report.append(f"| {r['model']} | {fd_val:.4f} |")
+            report.append("")
+
     # --- Failures ---
     if failures:
         report.append("## Failures")

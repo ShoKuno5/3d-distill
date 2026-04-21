@@ -1,0 +1,99 @@
+# Teacher extended-step convergence check (E3)
+# =============================================
+# Runs Hunyuan3D-2.1 teacher at 100 and 200 steps on the 3 "failure" samples
+# (helicopter_015, robot_016, dinosaur_069) to isolate ODE discretization error
+# from capacity limit. Compared against existing 50-step baseline in
+# runs/20260421_cross_family/.
+
+# Dataset — filter to the 3 target samples via sample_ids_file
+dataset:
+  name: toys4k
+  root: /mnt/workspace/kuno/distillation/datasets/Toys4k
+  manifest: /mnt/workspace/kuno/distillation/distill_methods/manifest_train.csv
+  test_manifest: /mnt/workspace/kuno/distillation/distill_methods/manifest_test.csv
+  max_samples: null
+  sample_ids_file: /mnt/workspace/kuno/distillation/distill_methods/scripts/teacher_extended_samples.txt
+  category_filter: null
+
+# Training (unused, kept for schema compatibility)
+training:
+  training_data_dir: /mnt/workspace/kuno/distillation/results/distill_methods/training_data
+  batch_size: 4
+  num_workers: 4
+  seed: 42
+  bf16: true
+  model:
+    pretrained: tencent/Hunyuan3D-2.1
+    z_scale_factor: 1.0
+    lora:
+      rank: 64
+      alpha: 64
+      target_modules: [to_q, to_k, to_v, to_out.0]
+
+models:
+  - name: teacher_100step
+    version: "2.1"
+    description: "Hunyuan3D-2.1 teacher (100-step)"
+    mesh_filename: mesh_raw.obj
+    inference_params:
+      num_inference_steps: 100
+      guidance_scale: 5.0
+      octree_resolution: 384
+
+  - name: teacher_200step
+    version: "2.1"
+    description: "Hunyuan3D-2.1 teacher (200-step)"
+    mesh_filename: mesh_raw.obj
+    inference_params:
+      num_inference_steps: 200
+      guidance_scale: 5.0
+      octree_resolution: 384
+
+seeds: [42]
+
+output_root: /mnt/workspace/kuno/distillation/results/distill_methods/runs/20260421_manifold_diagnosis/e3_teacher_extended
+
+normalization:
+  gt_method: unit_sphere
+  pred_method: unit_sphere
+
+cleaning:
+  remove_nan: true
+  remove_inf: true
+  remove_degenerate_faces: true
+  remove_unreferenced_vertices: true
+  remove_tiny_components: true
+  tiny_component_threshold: 0.01
+
+sampling:
+  alignment_points: 100000
+  eval_points: 16384
+
+alignment:
+  track_a:
+    method: similarity_icp
+    initial_rotations: 24
+    icp_max_iterations: 100
+    allow_reflection: false
+    allow_nonuniform_scale: false
+    scale_clamp: [0.5, 2.0]
+  track_b:
+    method: scale_only
+    allow_rotation: false
+
+metrics:
+  chamfer_distance:
+    variant: L2_squared
+  f_score:
+    thresholds: [0.01, 0.02]
+  hausdorff: true
+  mesh_quality_stats: true
+  bootstrap_ci:
+    enabled: false
+  frechet_distance:
+    enabled: false
+
+execution:
+  skip_existing: true
+  continue_on_failure: true
+  log_level: INFO

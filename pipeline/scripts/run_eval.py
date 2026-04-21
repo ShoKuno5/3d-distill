@@ -82,8 +82,10 @@ def setup_logging(log_dir: str, level: str = "INFO") -> logging.Logger:
 
 
 def load_config(config_path: str) -> dict:
+    from src.utils.inference_config import resolve_model_paths
     with open(config_path) as f:
-        return yaml.safe_load(f)
+        cfg = yaml.safe_load(f)
+    return resolve_model_paths(cfg)
 
 
 def load_mesh_safe(mesh_path: str) -> trimesh.Trimesh:
@@ -214,11 +216,17 @@ def evaluate_one(
 
         # === Track A: Similarity ICP ===
         t_align_start = time.time()
+        scale_clamp = align_cfg["track_a"].get("scale_clamp")
+        icp_kwargs = dict(
+            max_iterations=align_cfg["track_a"]["icp_max_iterations"],
+            n_initial_rotations=align_cfg["track_a"]["initial_rotations"],
+        )
+        if scale_clamp is not None:
+            icp_kwargs["scale_clamp"] = tuple(scale_clamp)
         track_a_result = align_similarity_icp(
             align_pts_norm,
             gt_pts_norm,
-            max_iterations=align_cfg["track_a"]["icp_max_iterations"],
-            n_initial_rotations=align_cfg["track_a"]["initial_rotations"],
+            **icp_kwargs,
         )
         t_align = time.time() - t_align_start
 
@@ -333,6 +341,10 @@ def main():
                         help="Skip Track B evaluation")
     parser.add_argument("--workers", type=int, default=None,
                         help="Number of parallel workers (default: CPU count)")
+    parser.add_argument("--scale-clamp-min", type=float, default=None,
+                        help="Override Track A scale clamp lower bound (default from config)")
+    parser.add_argument("--scale-clamp-max", type=float, default=None,
+                        help="Override Track A scale clamp upper bound (default from config)")
     args = parser.parse_args()
 
     cfg = load_config(args.config)
@@ -346,7 +358,8 @@ def main():
 
     # --- Load samples ---
     max_samples = args.max_samples or cfg["dataset"].get("max_samples")
-    samples = load_manifest(cfg["dataset"]["manifest"])
+    manifest_path = cfg["dataset"].get("test_manifest") or cfg["dataset"]["manifest"]
+    samples = load_manifest(manifest_path)
     samples = filter_samples(
         samples,
         max_samples=max_samples,
@@ -370,6 +383,14 @@ def main():
     clean_cfg = cfg["cleaning"]
     align_cfg = cfg["alignment"]
     continue_on_failure = cfg.get("execution", {}).get("continue_on_failure", True)
+
+    # CLI override: scale_clamp for Track A (fairness sensitivity runs)
+    if args.scale_clamp_min is not None or args.scale_clamp_max is not None:
+        current = align_cfg["track_a"].get("scale_clamp", [0.5, 2.0])
+        s_min = args.scale_clamp_min if args.scale_clamp_min is not None else current[0]
+        s_max = args.scale_clamp_max if args.scale_clamp_max is not None else current[1]
+        align_cfg["track_a"]["scale_clamp"] = [s_min, s_max]
+        logger.info(f"Track A scale_clamp overridden to [{s_min}, {s_max}]")
 
     # --- Determine worker count ---
     n_workers = args.workers
@@ -531,6 +552,43 @@ def main():
 
     # --- Summary ---
     _write_summary(per_sample_rows, model_names, metrics_dir, cfg, logger)
+
+    # --- Frechet Distance (if configured) ---
+    fd_cfg = cfg.get("metrics", {}).get("frechet_distance", {})
+    if fd_cfg.get("enabled", False):
+        logger.info("Computing Frechet Distance metrics...")
+        try:
+            from src.evaluation.frechet_distance import compute_fd_for_model
+            renders_dir = os.path.join(output_root, "multiview_renders")
+            gt_dir = os.path.join(renders_dir, "gt")
+            fd_models = fd_cfg.get("models", ["inception_v3"])
+            fd_rows = []
+
+            for mcfg in model_cfgs:
+                model_name = mcfg["name"]
+                pred_dir = os.path.join(renders_dir, model_name)
+                if not os.path.isdir(pred_dir):
+                    logger.warning(f"  No renders for {model_name}, skipping FD")
+                    continue
+                for feat_model in fd_models:
+                    try:
+                        fd = compute_fd_for_model(pred_dir, gt_dir, model_name=feat_model)
+                        logger.info(f"  {model_name} FD_{feat_model}: {fd:.4f}")
+                        fd_rows.append({
+                            "model": model_name,
+                            "feature_extractor": feat_model,
+                            "frechet_distance": fd,
+                        })
+                    except Exception as e:
+                        logger.error(f"  FD failed for {model_name}/{feat_model}: {e}")
+
+            if fd_rows:
+                fd_path = os.path.join(metrics_dir, "frechet_distance.csv")
+                _write_csv(fd_path, fd_rows,
+                           ["model", "feature_extractor", "frechet_distance"])
+                logger.info(f"  FD results: {fd_path}")
+        except ImportError as e:
+            logger.warning(f"  FD computation skipped (missing dependency): {e}")
 
     logger.info("Evaluation complete.")
 

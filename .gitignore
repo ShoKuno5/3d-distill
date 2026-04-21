@@ -20,3 +20,9 @@ __pycache__/
 
 # Claude Code working files
 .claude/
+
+# Legacy archive backup (same content as archive/ but with dot prefix)
+.archive/
+
+# Unrelated tarball (accidentally dropped here)
+xkbcommon-1.5.1.tar.gz

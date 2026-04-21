@@ -1,5 +1,6 @@
 """Shared helpers for inference: config loading and sample filtering."""
 
+import os
 from typing import Any, Dict, List, Optional
 
 
@@ -24,7 +25,37 @@ DEFAULTS = {
         "guidance_scale": 5.0,    # match official demo default (FlowMatching pipeline)
         "octree_resolution": 384,
     },
+    "mdt_dist": {
+        "ss_steps": 2,
+        "slat_steps": 2,
+        "ss_cfg": 5.0,
+        "slat_cfg": 1.0,
+        "ss_cfg_interval": [0.5, 1.0],
+        "slat_cfg_interval": [0.5, 1.0],
+        "rescale_t": 1.0,
+    },
+    "flashvdm": {
+        "num_inference_steps": 5,
+        "octree_resolution": 380,
+        "num_chunks": 200000,
+    },
 }
+
+
+def resolve_model_paths(cfg: dict) -> dict:
+    """Fill in predictions_root and lora_path from output_root if not set."""
+    output_root = cfg.get("output_root", "")
+    for m in cfg.get("models", []):
+        if "predictions_root" not in m:
+            m["predictions_root"] = os.path.join(
+                output_root, "predictions", m["name"], "default"
+            )
+        method = m.get("method")
+        if method and "lora_path" not in m.get("inference_params", {}):
+            m.setdefault("inference_params", {})["lora_path"] = os.path.join(
+                output_root, "checkpoints", method, "step_final"
+            )
+    return cfg
 
 
 def get_model_config(cfg: dict, model_name: str) -> Optional[dict]:
@@ -52,7 +83,11 @@ def get_inference_params(cfg: dict, model_name: str) -> Dict[str, Any]:
     return merged
 
 
-def load_and_filter_samples(cfg: dict, max_samples_override: Optional[int] = None) -> List:
+def load_and_filter_samples(
+    cfg: dict,
+    max_samples_override: Optional[int] = None,
+    manifest_key: str = "manifest",
+) -> List:
     """Load manifest and apply all configured filters consistently.
 
     Uses the same filtering logic as run_eval.py:
@@ -61,6 +96,8 @@ def load_and_filter_samples(cfg: dict, max_samples_override: Optional[int] = Non
     Args:
         cfg: Parsed YAML config dict.
         max_samples_override: CLI --max-samples value (overrides config).
+        manifest_key: Which manifest to load from dataset config
+            (e.g. "manifest" for training, "test_manifest" for evaluation).
 
     Returns:
         Filtered list of Sample objects.
@@ -68,7 +105,8 @@ def load_and_filter_samples(cfg: dict, max_samples_override: Optional[int] = Non
     from src.data.toys4k import load_manifest, filter_samples
 
     max_samples = max_samples_override or cfg["dataset"].get("max_samples")
-    samples = load_manifest(cfg["dataset"]["manifest"])
+    manifest_path = cfg["dataset"].get(manifest_key) or cfg["dataset"]["manifest"]
+    samples = load_manifest(manifest_path)
     samples = filter_samples(
         samples,
         max_samples=max_samples,

@@ -26,7 +26,12 @@ Not evaluated: CAST (external API dependency), ShapeR (requires SLAM input)
 .
 ├── docs/               # Architecture survey, experiment plan
 ├── models/             # Git repos for each model (2 active + 3 reference)
-├── datasets/           # Toys4k (input images + GT point clouds)
+├── datasets/
+│   └── Toys4k/
+│       ├── official/   #   Unmodified distribution (blend, obj, point clouds, sample renders)
+│       ├── renders/    #   Locally generated: <res>/<category>/<oid>/{image,depth,segmentation}.png
+│       ├── zips/       #   Original zip archives
+│       └── compat/     #   Legacy path symlinks for past experiments
 ├── pipeline/           # Evaluation infrastructure
 │   ├── scripts/        #   Inference & evaluation scripts
 │   ├── src/            #   Shared library (geometry, evaluation, data)
@@ -35,6 +40,7 @@ Not evaluated: CAST (external API dependency), ShapeR (requires SLAM input)
 │   ├── _template/      #   Copy to create new experiments
 │   ├── toys4k_baseline/
 │   ├── resolution_sweep/
+│   ├── category_pilot/
 │   └── examples_qual/
 ├── results/            # Experiment outputs
 │   └── toys4k/         #   Per-dataset
