@@ -1,7 +1,9 @@
 # Current State — 2026-04-21
 
-Snapshot of what's **established**, **uncertain**, or **open** in each research
-axis. Cross-reference with [AXIS_INDEX.md](AXIS_INDEX.md) for file pointers.
+Snapshot of what's **established**, **uncertain**, or **open** in the two
+research threads running in this repo: **trajectory analysis** (what the
+VecSet teacher does) and **distillation comparison** (how student methods
+fare vs teacher).
 
 ---
 
@@ -82,6 +84,31 @@ axis. Cross-reference with [AXIS_INDEX.md](AXIS_INDEX.md) for file pointers.
 ## Axis B — Distillation comparison & student-vs-teacher
 
 ### Established
+
+0. **Cross-family benchmark (9 methods × 105 samples, Track A, CD ×10⁻³, 2026-04-21)**:
+
+   | Model | CD mean | CD median | Failures |
+   |---|---|---|---|
+   | teacher_50step | 8.5 | 2.5 | 0 |
+   | dmd2_1step (fixed) | **9.7** | 3.0 | 0 |
+   | trellis (v1 teacher) | 13.5 | 3.9 | 0 |
+   | dmd1_1step | 15.1 | 3.3 | 0 |
+   | trellis2 | 29.3 | 3.2 | 0 |
+   | cd_4step | 31.1 | 2.9 | 0 |
+   | pd_6step | 31.9 | 16.5 | 4 |
+   | flashvdm | 33.3 | 2.4 | 0 |
+   | mdt_dist | 116.3 | 6.4 | 0 |
+
+   Source: `runs/20260421_cross_family/metrics/summary.csv`.
+   Key take-aways:
+   - **DMD2 bug fix is successful**: 260.9×10⁻³ (Part 2) → 9.7×10⁻³ (27× improvement, now best
+     among single-step methods). Part 2 report's "DMD2 is catastrophic" framing is historical.
+   - **Architecture-level distillation resilience differs**: H3D-2.1 teacher (8.5) and its
+     distillations (9.7–33.3) stay within 4× of teacher. TRELLIS v1 teacher (13.5) →
+     MDT-Dist distilled (116.3) is a 9× degradation. VecSet vs sparse-voxel distillation
+     behaviors diverge.
+   - **Track B CD is 5–15× worse than Track A across all methods**: TRELLIS family shows
+     the largest gap (13.5 → 212), suggesting stronger alignment dependence.
 
 1. **DMD1 produces valid SDFs universally** (0/105 Mode A, 92 Mode B + 13 unclear).
    Decoder refusal is not a DMD1 failure mode.

@@ -3,28 +3,22 @@
 Branch: `exp/distill-methods-v2` (historical) / `exp/cross-family-bench` (current)
 | Hunyuan3D-2.1 | Toys4k (420 train / 105 test)
 
-## Two research axes
+## Current state
 
-This project has accumulated results spanning two distinct axes. Use the
-following documents to navigate:
+Two parallel research threads are running in this repo:
 
-- **[AXIS_INDEX.md](AXIS_INDEX.md)** — every script / config / report / results
-  directory mapped to axis
-- **[STATE.md](STATE.md)** — current knowledge per axis (established /
-  uncertain / open)
-- **[FORWARD.md](FORWARD.md)** — next-step priorities per axis
+- **Trajectory analysis** — VecSet Hunyuan3D-2.1 teacher's stepwise ODE behavior
+  (direction/norm evolution, step-count sensitivity, decoder behavior)
+- **Distillation comparison** — how student methods (PD / CD / DMD1 / DMD2 /
+  SiD / FlashVDM / MDT-Dist) fare vs teacher
 
-**Axis A — Teacher trajectory**: what does the VecSet Hunyuan3D-2.1 teacher
-*do* during its 50-step ODE? (stepwise decoding, direction/norm evolution,
-step-count sensitivity, decoder behavior)
+Current claims and numbers: **[STATE.md](STATE.md)**.
+Historical reports: see `reports/` (2026-04-08 combined-analysis through
+2026-04-21 manifold-diagnosis).
 
-**Axis B — Distillation comparison**: how do student methods (PD/CD/DMD1/DMD2/
-SiD/FlashVDM/MDT-Dist) compare to teacher? (failure modes, norm deviation
-as predictor, routing design)
-
-The sections below describe the original Axis B comparison setup
-(4 distillation methods). Cross-family (9 methods) and manifold-diagnosis
-results are in `reports/2026-04-21_*.html`.
+The sections below describe the original 4-method comparison setup.
+Cross-family (9 methods) benchmark and E1/E2/E3 manifold-diagnosis results
+are in the respective HTML reports.
 
 ---
 
