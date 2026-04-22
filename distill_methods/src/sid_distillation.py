@@ -32,24 +32,32 @@ logger = logging.getLogger(__name__)
 class SiDDistillation(BaseDistiller):
     """SiD: score identity distillation with Long-Short Guidance."""
 
+    # Adapter switching means only one of {student, fake_score} contributes
+    # to any given backward pass; DDP needs the permissive flag.
+    _ddp_find_unused_parameters = True
+
     def __init__(self, config):
         super().__init__(config)
 
         sid_cfg = config["training"]["methods"]["sid"]
-        lora_cfg = config["training"]["model"]["lora"]
 
         self.lsg_teacher_scale = sid_cfg["lsg_teacher_scale"]
         self.lsg_fake_scale = sid_cfg.get("lsg_fake_scale", 0.0)
         self.grad_norm_type = sid_cfg.get("grad_norm_type", "adaptive")
 
-        # Fake score adapter on the student model
-        model = self.student.module if self.is_distributed else self.student
-        self.fake_score_adapter = FakeScoreAdapter(model, lora_cfg)
+        # fake_score_adapter is created in _add_extra_adapters() during
+        # BaseDistiller.__init__, before DDP wrap.
 
         self._setup_optimizer()
 
     def _method_name(self) -> str:
         return "sid"
+
+    def _add_extra_adapters(self):
+        """Register fake_score LoRA adapter before DDP wrap."""
+        lora_cfg = self.config["training"]["model"]["lora"]
+        # self.student is still a plain PeftModel here (not yet DDP-wrapped).
+        self.fake_score_adapter = FakeScoreAdapter(self.student, lora_cfg)
 
     # Flag: we handle backward/step ourselves (dual optimizers)
     _custom_backward = True
@@ -212,10 +220,22 @@ class SiDDistillation(BaseDistiller):
     # ------------------------------------------------------------------
 
     def save_checkpoint(self, step):
-        """Save base checkpoint + optimizer_fake state."""
+        """Save base checkpoint + fake_score weights + optimizer_fake state."""
         super().save_checkpoint(step)
 
         save_dir = os.path.join(self.ckpt_dir, f"step_{step}")
+
+        # PeftModel.save_pretrained() saves only the active adapter, so the
+        # fake_score LoRA weights are not in the base checkpoint. Snapshot
+        # them explicitly so resume does not silently re-initialize them.
+        model = self.student.module if self.is_distributed else self.student
+        fake_state = {
+            n: p.data.detach().cpu().clone()
+            for n, p in model.named_parameters()
+            if "fake_score" in n
+        }
+        torch.save(fake_state, os.path.join(save_dir, "fake_score_adapter.pt"))
+        logger.info("Saved fake_score adapter weights (%d tensors)", len(fake_state))
 
         # Append optimizer_fake state to existing train_state.pt
         train_state_path = os.path.join(save_dir, "train_state.pt")
@@ -225,8 +245,35 @@ class SiDDistillation(BaseDistiller):
         logger.info("Saved optimizer_fake state")
 
     def load_checkpoint(self, path: str) -> int:
-        """Load base checkpoint + optimizer_fake state."""
+        """Load base checkpoint + fake_score weights + optimizer_fake state."""
         resume_step = super().load_checkpoint(path)
+
+        # super() rebuilt the fake_score adapter with random weights via
+        # _add_extra_adapters(). Copy the saved weights into those tensors;
+        # optimizer_fake's parameter references stay valid because we are
+        # modifying tensor data in place.
+        fake_path = os.path.join(path, "fake_score_adapter.pt")
+        if os.path.exists(fake_path):
+            fake_state = torch.load(fake_path, map_location=self.device)
+            model = self.student.module if self.is_distributed else self.student
+            loaded = 0
+            with torch.no_grad():
+                for n, p in model.named_parameters():
+                    if n in fake_state:
+                        p.data.copy_(fake_state[n])
+                        loaded += 1
+            if loaded != len(fake_state):
+                logger.warning(
+                    "fake_score restore: %d/%d tensors matched by name",
+                    loaded, len(fake_state),
+                )
+            else:
+                logger.info("Restored fake_score adapter weights (%d tensors)", loaded)
+        else:
+            logger.warning(
+                "No fake_score_adapter.pt in %s; fake_score resumes from random init",
+                path,
+            )
 
         # Restore optimizer_fake state from train_state.pt
         train_state_path = os.path.join(path, "train_state.pt")

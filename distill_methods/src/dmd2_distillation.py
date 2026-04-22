@@ -75,19 +75,22 @@ class DMD2Distillation(DMD1Distillation):
 
     def __init__(self, config):
         # Skip DMD1.__init__'s pairs setup by calling BaseDistiller.__init__
-        # then doing our own setup
+        # then doing our own setup. BaseDistiller.__init__ triggers
+        # _add_extra_adapters() (inherited from DMD1), which creates
+        # fake_score_adapter before the DDP wrap.
         from base_distiller import BaseDistiller
         BaseDistiller.__init__(self, config)
 
         dmd2_cfg = config["training"]["methods"]["dmd2"]
-        lora_cfg = config["training"]["model"]["lora"]
 
         self.lambda_gan = dmd2_cfg["lambda_gan"]
         self.d_update_ratio = dmd2_cfg["d_update_ratio"]
 
-        # Fake score adapter (shared logic with DMD1)
+        # fake_score_adapter was created by inherited _add_extra_adapters()
+        # during BaseDistiller.__init__, before DDP wrap.
+
+        # Unwrap DDP for feature-hook registration on the student below.
         model = self.student.module if self.is_distributed else self.student
-        self.fake_score_adapter = FakeScoreAdapter(model, lora_cfg)
 
         # Discriminator
         # DiT hidden dim: determined from the model config

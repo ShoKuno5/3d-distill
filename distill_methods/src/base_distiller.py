@@ -123,6 +123,11 @@ class BaseDistiller:
         )
 
         # --- EMA over trainable (LoRA) parameters ---
+        # Note: EMA is created BEFORE _add_extra_adapters() on purpose.
+        # Extra adapters (e.g. DMD1/DMD2/SiD's fake_score) are auxiliary
+        # score networks, not the generator being distilled, and should
+        # not be EMA'd. Keeping EMA initialization above the hook ensures
+        # only the student (default) adapter's params are tracked.
         self.ema = _load_ema(
             self.student,
             decay=ema_cfg["decay"],
@@ -130,12 +135,19 @@ class BaseDistiller:
         )
         self.ema.to(self.device)
 
+        # Subclasses register extra PEFT adapters (e.g. fake_score) before
+        # DDP wrap so their params are included in DDP's gradient buckets.
+        self._add_extra_adapters()
+
         # --- DDP ---
         if self.is_distributed:
+            # find_unused_parameters=True because adapter switching means
+            # different subsets of params participate in each backward pass.
+            ddp_find_unused = getattr(self, "_ddp_find_unused_parameters", False)
             self.student = DDP(
                 self.student,
                 device_ids=[self.rank],
-                find_unused_parameters=False,
+                find_unused_parameters=ddp_find_unused,
             )
 
         # --- Wandb ---
@@ -158,6 +170,18 @@ class BaseDistiller:
     def training_step(self, batch: dict, step: int) -> dict:
         """Compute loss for one step. Must return dict with 'loss' key."""
         raise NotImplementedError
+
+    def _add_extra_adapters(self):
+        """Hook called after EMA setup, before DDP wrap. Default no-op.
+
+        Subclasses override this to register extra PEFT adapters on
+        ``self.student`` (e.g. DMD1/DMD2/SiD's fake_score). Adapters added
+        via ``peft.add_adapter()`` AFTER DDP wraps the module are silently
+        excluded from DDP's gradient all-reduce and diverge per-rank, so
+        this hook ensures their params live inside the DDP module when
+        wrapping happens.
+        """
+        pass
 
     def _setup_optimizer(self):
         """Create optimizer from global training.optimizer config.
@@ -229,9 +253,19 @@ class BaseDistiller:
     def student_forward(
         self, x_t: torch.Tensor, t: torch.Tensor, contexts: dict,
     ) -> torch.Tensor:
-        """Student velocity prediction (LoRA active)."""
-        model = self.student.module if self.is_distributed else self.student
-        return model(x_t, t, contexts=contexts)
+        """Student velocity prediction (LoRA active).
+
+        Goes through ``self.student`` (not ``.module``) so that DDP's
+        ``prepare_for_backward`` hook fires and gradient all-reduce is
+        registered for the subsequent backward. Unwrapping DDP here
+        causes silent per-rank divergence: grads are computed locally
+        but never all-reduced.
+
+        Under ``torch.no_grad()`` DDP's forward skips the reducer state
+        update, so no-grad callers (e.g. fake_score queries in the
+        student-update phase) incur no extra cost or bookkeeping.
+        """
+        return self.student(x_t, t, contexts=contexts)
 
     def _null_contexts(self, contexts: dict) -> dict:
         """Create null (zero) contexts for CFG unconditional branch."""
@@ -388,9 +422,15 @@ class BaseDistiller:
         else:
             base = model
         self.student = PeftModel.from_pretrained(base, path, is_trainable=True)
+        # Re-register extra adapters (fake_score) on the rebuilt student
+        # before DDP wrap, mirroring __init__'s ordering.
+        self._add_extra_adapters()
         if self.is_distributed:
+            ddp_find_unused = getattr(self, "_ddp_find_unused_parameters", False)
             self.student = DDP(
-                self.student, device_ids=[self.rank], find_unused_parameters=False,
+                self.student,
+                device_ids=[self.rank],
+                find_unused_parameters=ddp_find_unused,
             )
 
         # Rebuild optimizer with new model parameters
