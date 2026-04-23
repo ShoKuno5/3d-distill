@@ -343,6 +343,10 @@ def main():
                         help="Number of parallel workers (default: CPU count)")
     parser.add_argument("--scale-clamp-min", type=float, default=None,
                         help="Override Track A scale clamp lower bound (default from config)")
+    parser.add_argument("--reference-model", default=None,
+                        help="Use this model's predictions as reference instead of pc10K GT. "
+                             "Model must appear in config.models. Produces 'vs teacher' metrics "
+                             "under the same Track A/B pipeline.")
     parser.add_argument("--scale-clamp-max", type=float, default=None,
                         help="Override Track A scale clamp upper bound (default from config)")
     args = parser.parse_args()
@@ -407,27 +411,62 @@ def main():
     metrics_dir = os.path.join(output_root, "metrics")
     os.makedirs(metrics_dir, exist_ok=True)
 
-    # --- Prepare GT point clouds (sequential, fast) ---
-    gt_data = {}  # sid -> gt_pts_norm
+    # --- Resolve reference source: pc10K GT (default) or another model's predictions ---
+    ref_cfg = None
+    if args.reference_model:
+        ref_cfg = next((m for m in model_cfgs if m["name"] == args.reference_model), None)
+        if ref_cfg is None:
+            raise ValueError(
+                f"--reference-model '{args.reference_model}' not found in config.models"
+            )
+        logger.info(
+            f"Using model '{args.reference_model}' as reference (instead of pc10K GT). "
+            f"Metrics computed vs this model's predictions under identical pipeline."
+        )
+
+    # --- Prepare reference point clouds (sequential, fast) ---
+    gt_data = {}  # sid -> ref_pts_norm
+    ref_label = args.reference_model if ref_cfg else "GT"
+    cache_subdir = f"ref_{args.reference_model}_canonical" if ref_cfg else "gt_canonical"
     for sample in samples:
         sid = sample.object_id
         cat = sample.category
         t_gt_start = time.time()
         try:
-            gt_pts_raw, gt_normals = load_gt_pointcloud(sample.point_cloud)
+            if ref_cfg is not None:
+                # Load reference model's prediction mesh, clean + sample identically to preds
+                ref_mesh_path = os.path.join(
+                    ref_cfg["predictions_root"], sid, ref_cfg["mesh_filename"]
+                )
+                ref_mesh = load_mesh_safe(ref_mesh_path)
+                cleaned_ref, clean_report = clean_mesh(
+                    ref_mesh,
+                    remove_nan=clean_cfg["remove_nan"],
+                    remove_inf=clean_cfg["remove_inf"],
+                    remove_degenerate=clean_cfg["remove_degenerate_faces"],
+                    remove_unreferenced=clean_cfg["remove_unreferenced_vertices"],
+                    remove_tiny_components=clean_cfg["remove_tiny_components"],
+                    tiny_threshold=clean_cfg["tiny_component_threshold"],
+                )
+                if clean_report.is_empty:
+                    raise ValueError(f"Reference mesh empty after cleaning for {sid}")
+                ref_pts_raw = sample_surface(cleaned_ref, n_align_pts, seed=0)
+            else:
+                ref_pts_raw, _ = load_gt_pointcloud(sample.point_cloud)
         except Exception as e:
-            logger.error(f"  Cannot load GT for {sid}: {e}")
-            failure_rows.append({"object_id": sid, "category": cat, "model": "GT", "error": str(e)})
+            logger.error(f"  Cannot load reference for {sid}: {e}")
+            failure_rows.append(
+                {"object_id": sid, "category": cat, "model": ref_label, "error": str(e)}
+            )
             continue
-        gt_pts_norm, gt_transform = normalize_to_unit_sphere(gt_pts_raw)
+        gt_pts_norm, gt_transform = normalize_to_unit_sphere(ref_pts_raw)
         t_gt = time.time() - t_gt_start
 
-        # Cache GT canonical
-        gt_cache_path = os.path.join(output_root, "cache", "gt_canonical", f"{sid}.npz")
+        gt_cache_path = os.path.join(output_root, "cache", cache_subdir, f"{sid}.npz")
         save_pointcloud(gt_pts_norm, gt_cache_path)
 
         gt_data[sid] = gt_pts_norm
-        logger.info(f"GT {sid}: {gt_pts_norm.shape[0]} pts ({t_gt:.2f}s)")
+        logger.info(f"{ref_label} {sid}: {gt_pts_norm.shape[0]} pts ({t_gt:.2f}s)")
 
     # --- Build job list ---
     jobs = []

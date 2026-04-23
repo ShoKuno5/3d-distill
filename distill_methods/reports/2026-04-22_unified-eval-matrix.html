@@ -1,0 +1,607 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Part 5 — Unified Evaluation Matrix</title>
+<style>
+body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; max-width: 1100px; margin: 30px auto; padding: 0 20px; line-height: 1.65; color: #1a1a1a; font-size: 15px; }
+h1 { font-size: 24px; border-bottom: 2px solid #333; padding-bottom: 6px; }
+.series { color: #666; font-size: 13px; margin-top: 5px; }
+.tldr { background: #eff6ff; border-left: 4px solid #3b82f6; padding: 12px 18px; margin: 20px 0; }
+h2 { font-size: 19px; margin-top: 36px; color: #1e40af; border-bottom: 1px solid #ddd; padding-bottom: 4px; }
+h3 { font-size: 16px; margin-top: 22px; color: #444; }
+.design-box { background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 5px; padding: 12px 18px; margin: 12px 0; }
+.design-box h4 { margin: 6px 0 8px 0; font-size: 14px; color: #374151; }
+.design-box ul { margin: 4px 0 8px 18px; font-size: 14px; }
+.design-box li { margin: 3px 0; }
+.design-box code { font-family: 'Courier New', monospace; background: #e5e7eb; padding: 1px 4px; border-radius: 3px; font-size: 12.5px; }
+table { border-collapse: collapse; margin: 12px 0; font-size: 13px; width: 100%; }
+th, td { border: 1px solid #ccc; padding: 5px 9px; text-align: left; vertical-align: top; }
+th { background: #f5f5f5; text-align: center; font-weight: 600; }
+td.num { text-align: right; font-family: 'SF Mono', Menlo, monospace; font-size: 12.5px; }
+td.tiny { font-size: 11px; color: #666; }
+.result-table th.group-a { background: #eff6ff; }
+.result-table th.group-b { background: #fef3c7; }
+.result-table td.group-a { background: #f8faff; }
+.result-table td.group-b { background: #fffbeb; }
+.result-table tr.group-header td { background: #e5e7eb; font-size: 13px; }
+.result-table td.fail-note { color: #b91c1c; font-style: italic; text-align: center; }
+.wilcoxon-table { max-width: 800px; }
+.wilcoxon-table tr.highlight-ns { background: #f3f4f6; }
+.wilcoxon-table td.sig-sss { color: #059669; font-weight: 700; text-align: center; }
+.wilcoxon-table td.sig-ss { color: #059669; font-weight: 600; text-align: center; }
+.wilcoxon-table td.sig-s { color: #f59e0b; font-weight: 600; text-align: center; }
+.wilcoxon-table td.sig-ns { color: #6b7280; text-align: center; }
+code { font-family: 'Courier New', monospace; background: #f1f1f1; padding: 1px 5px; border-radius: 3px; font-size: 13px; }
+.warn { background: #fef3c7; border-left: 4px solid #f59e0b; padding: 10px 15px; margin: 12px 0; font-size: 14px; }
+.ok { background: #d1fae5; border-left: 4px solid #059669; padding: 10px 15px; margin: 12px 0; font-size: 14px; }
+.question { background: #ede9fe; border-left: 4px solid #7c3aed; padding: 8px 14px; margin: 10px 0; font-size: 14px; }
+.question strong { color: #5b21b6; }
+a { color: #2563eb; }
+.caveat { font-size: 13.5px; color: #555; }
+</style>
+</head>
+<body>
+
+<h1>Part 5 — Unified Evaluation Matrix (reference × alignment)</h1>
+<div class="series">
+Previous: <a href="2026-04-21_cross-family-benchmark.html">Part 4 (Cross-family Benchmark on Toys4k)</a><br>
+2026-04-22 &nbsp;|&nbsp; Sho Kuno &nbsp;|&nbsp; Shanda AI Research Tokyo / The University of Tokyo
+</div>
+
+<div class="tldr">
+<strong>TL;DR.</strong> Prior reports (Parts 1–4) used different evaluation pipelines and different references (teacher mesh vs. ground-truth point cloud). This caused apparent ranking reversals that were hard to interpret. We re-evaluate <strong>the same 11 pre-existing checkpoints</strong> under a single unified pipeline, varying only two axes: (i) <strong>reference</strong> (Toys4k ground-truth pc10K.npz vs. teacher_50step predicted mesh) and (ii) <strong>alignment</strong> (24-start similarity ICP vs. identity). Training is <strong>not</strong> rerun — no checkpoint changes. The result is a 2×2 evaluation matrix that separates "how close to the real GT" from "how close to the teacher". Under this matrix, <code>dmd2_exp2_plus_reg</code> (DMD2 + regression hybrid) ties with <code>teacher_50step</code> on median CD vs. GT (Wilcoxon p = 0.54) and is the top non-teacher distilled method in both references.
+</div>
+
+<h2>1. Motivation</h2>
+
+<p>Across the previous 4 reports, different questions were asked under different pipelines:</p>
+<ul>
+<li><strong>Part 1 (2026-04-08)</strong> used <code>eval_distill.py</code>: reference = <em>teacher_50step predicted mesh</em>, no ICP alignment. Produced rankings like "DMD1 &gt; DMD2 canonical" because DMD1's regression objective directly targets the teacher.</li>
+<li><strong>Part 4 (2026-04-21)</strong> used <code>run_eval.py</code>: reference = <em>Toys4k pc10K.npz ground truth</em>, with 24-start ICP alignment. Produced rankings like "DMD2 canonical ≳ DMD1" on median CD.</li>
+</ul>
+<p>These are not contradictory — they measure different things. The goal here is to expose both axes explicitly and report all 2×2 combinations so that each method's behavior along <em>reference</em> and <em>alignment</em> can be read off directly. We also bring in every Hunyuan3D-2.1 distillation variant (including <code>dmd2_exp2_plus_reg</code>, which was never cross-family evaluated) and the TRELLIS family as cross-family context.</p>
+
+<h2>2. Experimental design</h2>
+
+<div class="design-box">
+<h4>2.1 What varies across evaluations (two axes)</h4>
+<ul>
+<li><strong>Reference source</strong> (2 values): <code>gt</code> = Toys4k pc10K.npz (10,000 GT surface points); <code>teacher</code> = teacher_50step predicted mesh for the same sample, cleaned and surface-sampled identically to predictions.</li>
+<li><strong>Alignment</strong> (2 values): <strong>With ICP</strong> = 24 cube-canonical initial rotations, similarity ICP with scale clamped to [0.5, 2.0]; <strong>No alignment</strong> = identity (only the per-cloud unit-sphere normalization shared by all methods).</li>
+</ul>
+<h4>2.2 What is held fixed (to isolate the above axes)</h4>
+<ul>
+<li><strong>Test set</strong>: <code>manifest_test.csv</code>, 105 Toys4k samples (one per category). Identical across all methods.</li>
+<li><strong>Predictions</strong>: existing mesh outputs re-used without re-inference. No method is retrained.</li>
+<li><strong>Mesh cleaning</strong>: remove NaN/Inf/degenerate faces/unreferenced vertices; remove tiny components below 1% of largest component.</li>
+<li><strong>Surface sampling</strong>: 100,000 points for alignment, 16,384 for metrics (seed 0, area-proportional).</li>
+<li><strong>Normalization</strong>: unit-sphere fit, same for prediction and reference.</li>
+<li><strong>Metrics</strong>: Chamfer distance (L2 squared, bidirectional), Hausdorff distance, F-score @1% and @2%, bootstrap 95% CI over n=1000 resamples.</li>
+<li><strong>Statistical tests</strong>: paired Wilcoxon signed-rank test on per-sample Track A CD (same 105 object_ids across both models being compared).</li>
+</ul>
+</div>
+
+<h3>2.3 Methods compared (11 models, 3 families)</h3>
+<table>
+<thead><tr><th>Family</th><th>Model</th><th>Steps</th><th>Learning signals</th></tr></thead>
+<tbody>
+<tr><td rowspan="8">Hunyuan3D-2.1</td><td>teacher_50step</td><td>50</td><td>(reference; pretrained)</td></tr>
+<tr><td>flashvdm</td><td>5</td><td>turbo VAE, loads Hunyuan3D-<strong>2.0</strong> weights</td></tr>
+<tr><td>pd_6step</td><td>6</td><td>Progressive distillation, teacher MSE per stage</td></tr>
+<tr><td>cd_4step</td><td>4</td><td>Consistency loss, self-consistency along ODE</td></tr>
+<tr><td>dmd1_k1</td><td>1</td><td>KL via learned fake_score <strong>+ MSE regression to teacher pairs</strong></td></tr>
+<tr><td>dmd2_exp1_canonical</td><td>1</td><td>KL via learned fake_score <strong>+ GAN on real latents</strong></td></tr>
+<tr><td><strong>dmd2_exp2_plus_reg</strong></td><td>1</td><td>KL + GAN + regression — <strong>uses all three signals</strong></td></tr>
+<tr><td>dmd2_exp3_no_gan</td><td>1</td><td>KL only (no GAN, no regression) — ablation</td></tr>
+<tr><td rowspan="2">TRELLIS v1</td><td>trellis</td><td>25+25</td><td>(reference; SLAT 2-stage sampler)</td></tr>
+<tr><td>mdt_dist</td><td>2+2</td><td>MDT-Dist (Zhou et al. 2025) on TRELLIS v1</td></tr>
+<tr><td>TRELLIS 2</td><td>trellis2</td><td>default</td><td>(reference; 1024_cascade pipeline)</td></tr>
+</tbody>
+</table>
+
+<h2>3. Results — Table A: vs. Toys4k ground truth (pc10K.npz)</h2>
+
+<div class="question"><strong>Question:</strong> How close is the generated 3D shape to the real ground-truth shape?</div>
+
+<p>The ICP-aligned columns measure intrinsic shape quality (frame/scale differences factored out). The no-alignment columns measure shape quality <em>in the student's native frame</em> — penalizing any frame drift from the GT's canonical orientation. The gap between them per method quantifies frame drift.</p>
+
+<table class='result-table'>
+<thead>
+<tr>
+  <th rowspan='2'>Model</th>
+  <th rowspan='2'>Steps</th>
+  <th colspan='3' class='group-a'>With 24-start ICP alignment (Track A)</th>
+  <th colspan='2' class='group-b'>No alignment — identity (Track B)</th>
+  <th rowspan='2'>F@2%<br>(median, A)</th>
+  <th rowspan='2'>Haus.<br>(median, A)</th>
+  <th rowspan='2'>n_fail<br>(A)</th>
+</tr>
+<tr>
+  <th class='group-a'>CD median</th>
+  <th class='group-a'>CD mean</th>
+  <th class='group-a'>95% CI (mean)</th>
+  <th class='group-b'>CD median</th>
+  <th class='group-b'>CD mean</th>
+</tr>
+</thead>
+<tbody>
+<tr class='group-header'><td colspan='10'><strong>Hunyuan3D-2.1 family</strong></td></tr>
+<tr title='50-step teacher (reference model)'>
+  <td>teacher_50step</td>
+  <td class='num'>50</td>
+  <td class='num group-a'>0.00251</td>
+  <td class='num group-a'>0.00855</td>
+  <td class='num group-a tiny'>[0.00521, 0.01275]</td>
+  <td class='num group-b'>0.02874</td>
+  <td class='num group-b'>0.07318</td>
+  <td class='num'>0.4548</td>
+  <td class='num'>0.1506</td>
+  <td class='num'>0</td>
+</tr>
+<tr title='FlashVDM — turbo VAE (loads Hunyuan3D-2.0 weights)'>
+  <td>flashvdm</td>
+  <td class='num'>5</td>
+  <td class='num group-a'>0.00245</td>
+  <td class='num group-a'>0.03332</td>
+  <td class='num group-a tiny'>[0.00486, 0.08776]</td>
+  <td class='num group-b'>0.04059</td>
+  <td class='num group-b'>0.08958</td>
+  <td class='num'>0.4701</td>
+  <td class='num'>0.1786</td>
+  <td class='num'>0</td>
+</tr>
+<tr title='Progressive Distillation'>
+  <td>pd_6step</td>
+  <td class='num'>6</td>
+  <td class='num group-a'>0.01653</td>
+  <td class='num group-a'>0.03190</td>
+  <td class='num group-a tiny'>[0.02420, 0.04057]</td>
+  <td class='num group-b'>0.04084</td>
+  <td class='num group-b'>0.08461</td>
+  <td class='num'>0.2438</td>
+  <td class='num'>0.4797</td>
+  <td class='num'>4</td>
+</tr>
+<tr title='Consistency Distillation'>
+  <td>cd_4step</td>
+  <td class='num'>4</td>
+  <td class='num group-a'>0.00295</td>
+  <td class='num group-a'>0.03113</td>
+  <td class='num group-a tiny'>[0.00889, 0.07520]</td>
+  <td class='num group-b'>0.02529</td>
+  <td class='num group-b'>0.06316</td>
+  <td class='num'>0.4132</td>
+  <td class='num'>0.1856</td>
+  <td class='num'>0</td>
+</tr>
+<tr title='DMD1 — KL via fake_score + regression against teacher pairs'>
+  <td>dmd1_k1</td>
+  <td class='num'>1</td>
+  <td class='num group-a'>0.00331</td>
+  <td class='num group-a'>0.01510</td>
+  <td class='num group-a tiny'>[0.00989, 0.02128]</td>
+  <td class='num group-b'>0.03018</td>
+  <td class='num group-b'>0.07032</td>
+  <td class='num'>0.4159</td>
+  <td class='num'>0.2386</td>
+  <td class='num'>0</td>
+</tr>
+<tr title='DMD2 Exp-1 canonical — KL via fake_score + GAN on real latents'>
+  <td>dmd2_exp1_canonical</td>
+  <td class='num'>1</td>
+  <td class='num group-a'>0.00299</td>
+  <td class='num group-a'>0.00967</td>
+  <td class='num group-a tiny'>[0.00672, 0.01321]</td>
+  <td class='num group-b'>0.02940</td>
+  <td class='num group-b'>0.07368</td>
+  <td class='num'>0.3538</td>
+  <td class='num'>0.1794</td>
+  <td class='num'>0</td>
+</tr>
+<tr title='DMD2 Exp-2 hybrid — DMD1 regression + DMD2 GAN'>
+  <td>dmd2_exp2_plus_reg</td>
+  <td class='num'>1</td>
+  <td class='num group-a'><strong>0.00226</strong></td>
+  <td class='num group-a'>0.01116</td>
+  <td class='num group-a tiny'>[0.00659, 0.01596]</td>
+  <td class='num group-b'>0.03762</td>
+  <td class='num group-b'>0.07799</td>
+  <td class='num'>0.4440</td>
+  <td class='num'>0.1583</td>
+  <td class='num'>0</td>
+</tr>
+<tr><td>dmd2_exp3_no_gan</td><td>1</td><td colspan='8' class='fail-note'>all 105 samples failed decoding (no metrics)</td></tr>
+<tr class='group-header'><td colspan='10'><strong>TRELLIS family (cross-family reference)</strong></td></tr>
+<tr title='TRELLIS v1 teacher (SLAT diffusion + mesh decoder)'>
+  <td>trellis</td>
+  <td class='num'>25+25</td>
+  <td class='num group-a'>0.00394</td>
+  <td class='num group-a'>0.01353</td>
+  <td class='num group-a tiny'>[0.00919, 0.01905]</td>
+  <td class='num group-b'>0.13519</td>
+  <td class='num group-b'>0.21215</td>
+  <td class='num'>0.3034</td>
+  <td class='num'>0.2084</td>
+  <td class='num'>0</td>
+</tr>
+<tr title='MDT-Dist — distilled TRELLIS v1 (Zhou et al. 2025)'>
+  <td>mdt_dist</td>
+  <td class='num'>2+2</td>
+  <td class='num group-a'>0.00639</td>
+  <td class='num group-a'>0.11629</td>
+  <td class='num group-a tiny'>[0.02610, 0.23833]</td>
+  <td class='num group-b'>0.14418</td>
+  <td class='num group-b'>0.20652</td>
+  <td class='num'>0.2466</td>
+  <td class='num'>0.2809</td>
+  <td class='num'>0</td>
+</tr>
+<tr title='TRELLIS 2 teacher (1024_cascade pipeline)'>
+  <td>trellis2</td>
+  <td class='num'>default</td>
+  <td class='num group-a'>0.00316</td>
+  <td class='num group-a'>0.02932</td>
+  <td class='num group-a tiny'>[0.01432, 0.05178]</td>
+  <td class='num group-b'>0.14850</td>
+  <td class='num group-b'>0.21040</td>
+  <td class='num'>0.3907</td>
+  <td class='num'>0.1852</td>
+  <td class='num'>0</td>
+</tr>
+</tbody>
+</table>
+
+<h2>4. Results — Table B: vs. teacher_50step predicted mesh (H3D-2.1)</h2>
+
+<div class="question"><strong>Question:</strong> How close is the generated 3D shape to the H3D-2.1 50-step teacher's output?</div>
+
+<div class="warn">
+<strong>Note on TRELLIS family rows.</strong> TRELLIS v1 and TRELLIS 2 do not share a teacher with the Hunyuan3D-2.1 family. Their numbers here measure <em>cross-family disagreement</em> between two different 3D generators, not teacher fidelity in the usual distillation sense. They are included for completeness but should not be compared as if they share a baseline.
+</div>
+
+<table class='result-table'>
+<thead>
+<tr>
+  <th rowspan='2'>Model</th>
+  <th rowspan='2'>Steps</th>
+  <th colspan='3' class='group-a'>With 24-start ICP alignment (Track A)</th>
+  <th colspan='2' class='group-b'>No alignment — identity (Track B)</th>
+  <th rowspan='2'>F@2%<br>(median, A)</th>
+  <th rowspan='2'>Haus.<br>(median, A)</th>
+  <th rowspan='2'>n_fail<br>(A)</th>
+</tr>
+<tr>
+  <th class='group-a'>CD median</th>
+  <th class='group-a'>CD mean</th>
+  <th class='group-a'>95% CI (mean)</th>
+  <th class='group-b'>CD median</th>
+  <th class='group-b'>CD mean</th>
+</tr>
+</thead>
+<tbody>
+<tr class='group-header'><td colspan='10'><strong>Hunyuan3D-2.1 family</strong></td></tr>
+<tr title='50-step teacher (reference model)'>
+  <td>teacher_50step</td>
+  <td class='num'>50</td>
+  <td class='num group-a'><strong>0.00008</strong></td>
+  <td class='num group-a'>0.00009</td>
+  <td class='num group-a tiny'>[0.00008, 0.00010]</td>
+  <td class='num group-b'>0.00008</td>
+  <td class='num group-b'>0.00009</td>
+  <td class='num'>0.9965</td>
+  <td class='num'>0.0306</td>
+  <td class='num'>0</td>
+</tr>
+<tr title='FlashVDM — turbo VAE (loads Hunyuan3D-2.0 weights)'>
+  <td>flashvdm</td>
+  <td class='num'>5</td>
+  <td class='num group-a'>0.00292</td>
+  <td class='num group-a'>0.01046</td>
+  <td class='num group-a tiny'>[0.00710, 0.01421]</td>
+  <td class='num group-b'>0.01213</td>
+  <td class='num group-b'>0.05555</td>
+  <td class='num'>0.5657</td>
+  <td class='num'>0.2084</td>
+  <td class='num'>0</td>
+</tr>
+<tr title='Progressive Distillation'>
+  <td>pd_6step</td>
+  <td class='num'>6</td>
+  <td class='num group-a'>0.01064</td>
+  <td class='num group-a'>0.05628</td>
+  <td class='num group-a tiny'>[0.01965, 0.12466]</td>
+  <td class='num group-b'>0.01907</td>
+  <td class='num group-b'>0.04311</td>
+  <td class='num'>0.3354</td>
+  <td class='num'>0.3805</td>
+  <td class='num'>4</td>
+</tr>
+<tr title='Consistency Distillation'>
+  <td>cd_4step</td>
+  <td class='num'>4</td>
+  <td class='num group-a'>0.00125</td>
+  <td class='num group-a'>0.12305</td>
+  <td class='num group-a tiny'>[0.02364, 0.25336]</td>
+  <td class='num group-b'>0.00187</td>
+  <td class='num group-b'>0.01909</td>
+  <td class='num'>0.7232</td>
+  <td class='num'>0.1399</td>
+  <td class='num'>0</td>
+</tr>
+<tr title='DMD1 — KL via fake_score + regression against teacher pairs'>
+  <td>dmd1_k1</td>
+  <td class='num'>1</td>
+  <td class='num group-a'>0.00178</td>
+  <td class='num group-a'>0.01684</td>
+  <td class='num group-a tiny'>[0.00654, 0.03508]</td>
+  <td class='num group-b'>0.00342</td>
+  <td class='num group-b'>0.02095</td>
+  <td class='num'>0.6442</td>
+  <td class='num'>0.2010</td>
+  <td class='num'>0</td>
+</tr>
+<tr title='DMD2 Exp-1 canonical — KL via fake_score + GAN on real latents'>
+  <td>dmd2_exp1_canonical</td>
+  <td class='num'>1</td>
+  <td class='num group-a'>0.00163</td>
+  <td class='num group-a'>0.04642</td>
+  <td class='num group-a tiny'>[0.00455, 0.12661]</td>
+  <td class='num group-b'>0.00494</td>
+  <td class='num group-b'>0.03430</td>
+  <td class='num'>0.5508</td>
+  <td class='num'>0.1368</td>
+  <td class='num'>0</td>
+</tr>
+<tr title='DMD2 Exp-2 hybrid — DMD1 regression + DMD2 GAN'>
+  <td>dmd2_exp2_plus_reg</td>
+  <td class='num'>1</td>
+  <td class='num group-a'>0.00101</td>
+  <td class='num group-a'>0.02599</td>
+  <td class='num group-a tiny'>[0.00336, 0.06912]</td>
+  <td class='num group-b'>0.00244</td>
+  <td class='num group-b'>0.02675</td>
+  <td class='num'>0.7350</td>
+  <td class='num'>0.1114</td>
+  <td class='num'>0</td>
+</tr>
+<tr><td>dmd2_exp3_no_gan</td><td>1</td><td colspan='8' class='fail-note'>all 105 samples failed decoding (no metrics)</td></tr>
+<tr class='group-header'><td colspan='10'><strong>TRELLIS family (cross-family reference)</strong></td></tr>
+<tr title='TRELLIS v1 teacher (SLAT diffusion + mesh decoder)'>
+  <td>trellis</td>
+  <td class='num'>25+25</td>
+  <td class='num group-a'>0.00355</td>
+  <td class='num group-a'>0.04892</td>
+  <td class='num group-a tiny'>[0.00825, 0.12638]</td>
+  <td class='num group-b'>0.14387</td>
+  <td class='num group-b'>0.21210</td>
+  <td class='num'>0.4490</td>
+  <td class='num'>0.1834</td>
+  <td class='num'>0</td>
+</tr>
+<tr title='MDT-Dist — distilled TRELLIS v1 (Zhou et al. 2025)'>
+  <td>mdt_dist</td>
+  <td class='num'>2+2</td>
+  <td class='num group-a'>0.00470</td>
+  <td class='num group-a'>0.04752</td>
+  <td class='num group-a tiny'>[0.01633, 0.10521]</td>
+  <td class='num group-b'>0.15624</td>
+  <td class='num group-b'>0.21012</td>
+  <td class='num'>0.3415</td>
+  <td class='num'>0.2094</td>
+  <td class='num'>0</td>
+</tr>
+<tr title='TRELLIS 2 teacher (1024_cascade pipeline)'>
+  <td>trellis2</td>
+  <td class='num'>default</td>
+  <td class='num group-a'>0.00405</td>
+  <td class='num group-a'>0.10017</td>
+  <td class='num group-a tiny'>[0.01673, 0.21554]</td>
+  <td class='num group-b'>0.14577</td>
+  <td class='num group-b'>0.20478</td>
+  <td class='num'>0.4256</td>
+  <td class='num'>0.2158</td>
+  <td class='num'>0</td>
+</tr>
+</tbody>
+</table>
+
+<h2>5. Paired Wilcoxon significance tests</h2>
+
+<p>Each row compares two methods on the same 105 test samples, using Track A (ICP-aligned) CD. Δmedian(A−B) negative means Model A has smaller (better) CD. At N=105, the threshold to resolve a difference is roughly |Δmedian| ≳ 3×10⁻⁴.</p>
+
+<h3>5.1 vs. Toys4k ground truth (pc10K.npz)</h3>
+<table class='wilcoxon-table'>
+<thead><tr><th>Model A</th><th>Model B</th><th>n</th><th>Δmedian(A-B)</th><th>p-value</th><th>sig.</th></tr></thead>
+<tbody>
+<tr class=''>
+  <td>teacher_50step</td>
+  <td>dmd1_k1</td>
+  <td class='num'>105</td>
+  <td class='num'>-0.000518</td>
+  <td class='num'>0.0000</td>
+  <td class='sig-sss'>***</td>
+</tr>
+<tr class=''>
+  <td>teacher_50step</td>
+  <td>dmd2_exp1_canonical</td>
+  <td class='num'>105</td>
+  <td class='num'>-0.000419</td>
+  <td class='num'>0.0075</td>
+  <td class='sig-ss'>**</td>
+</tr>
+<tr class='highlight-ns'>
+  <td>teacher_50step</td>
+  <td>dmd2_exp2_plus_reg</td>
+  <td class='num'>105</td>
+  <td class='num'>-0.000062</td>
+  <td class='num'>0.5362</td>
+  <td class='sig-ns'>ns</td>
+</tr>
+<tr class='highlight-ns'>
+  <td>dmd1_k1</td>
+  <td>dmd2_exp1_canonical</td>
+  <td class='num'>105</td>
+  <td class='num'>+0.000093</td>
+  <td class='num'>0.1544</td>
+  <td class='sig-ns'>ns</td>
+</tr>
+<tr class=''>
+  <td>dmd1_k1</td>
+  <td>dmd2_exp2_plus_reg</td>
+  <td class='num'>105</td>
+  <td class='num'>+0.000355</td>
+  <td class='num'>0.0000</td>
+  <td class='sig-sss'>***</td>
+</tr>
+<tr class=''>
+  <td>dmd2_exp1_canonical</td>
+  <td>dmd2_exp2_plus_reg</td>
+  <td class='num'>105</td>
+  <td class='num'>+0.000206</td>
+  <td class='num'>0.0385</td>
+  <td class='sig-s'>*</td>
+</tr>
+<tr class='highlight-ns'>
+  <td>cd_4step</td>
+  <td>dmd2_exp2_plus_reg</td>
+  <td class='num'>105</td>
+  <td class='num'>+0.000082</td>
+  <td class='num'>0.1462</td>
+  <td class='sig-ns'>ns</td>
+</tr>
+<tr class='highlight-ns'>
+  <td>flashvdm</td>
+  <td>dmd2_exp2_plus_reg</td>
+  <td class='num'>105</td>
+  <td class='num'>+0.000217</td>
+  <td class='num'>0.2388</td>
+  <td class='sig-ns'>ns</td>
+</tr>
+<tr class='highlight-ns'>
+  <td>flashvdm</td>
+  <td>teacher_50step</td>
+  <td class='num'>105</td>
+  <td class='num'>+0.000232</td>
+  <td class='num'>0.1000</td>
+  <td class='sig-ns'>ns</td>
+</tr>
+</tbody></table>
+
+<h3>5.2 vs. teacher_50step predicted mesh</h3>
+<table class='wilcoxon-table'>
+<thead><tr><th>Model A</th><th>Model B</th><th>n</th><th>Δmedian(A-B)</th><th>p-value</th><th>sig.</th></tr></thead>
+<tbody>
+<tr class='highlight-ns'>
+  <td>dmd1_k1</td>
+  <td>dmd2_exp1_canonical</td>
+  <td class='num'>105</td>
+  <td class='num'>-0.000058</td>
+  <td class='num'>0.9147</td>
+  <td class='sig-ns'>ns</td>
+</tr>
+<tr class=''>
+  <td>dmd1_k1</td>
+  <td>dmd2_exp2_plus_reg</td>
+  <td class='num'>105</td>
+  <td class='num'>+0.000202</td>
+  <td class='num'>0.0001</td>
+  <td class='sig-sss'>***</td>
+</tr>
+<tr class=''>
+  <td>dmd2_exp1_canonical</td>
+  <td>dmd2_exp2_plus_reg</td>
+  <td class='num'>105</td>
+  <td class='num'>+0.000315</td>
+  <td class='num'>0.0159</td>
+  <td class='sig-s'>*</td>
+</tr>
+<tr class='highlight-ns'>
+  <td>cd_4step</td>
+  <td>dmd2_exp2_plus_reg</td>
+  <td class='num'>105</td>
+  <td class='num'>-0.000013</td>
+  <td class='num'>0.8142</td>
+  <td class='sig-ns'>ns</td>
+</tr>
+<tr class=''>
+  <td>flashvdm</td>
+  <td>dmd2_exp2_plus_reg</td>
+  <td class='num'>105</td>
+  <td class='num'>+0.001112</td>
+  <td class='num'>0.0000</td>
+  <td class='sig-sss'>***</td>
+</tr>
+</tbody></table>
+
+<h2>6. Ablation: DMD2 Exp-3 (no GAN, no regression)</h2>
+
+<div class="warn">
+<strong>Catastrophic: all 105 test samples fail decoding.</strong><br>
+Without a GT-bearing signal (GAN on real latents) or a teacher-bearing signal (regression against teacher pairs), the KL term alone — which operates on student-generated samples via the fake_score network — provides no stable learning target. The student converges to a latent distribution that is not decodable by the frozen volume decoder. This confirms that the GAN branch in canonical DMD2 is <strong>necessary</strong>, not cosmetic: it is the channel through which ground-truth-distribution information enters the student.
+</div>
+
+<h2>7. Interpretation</h2>
+
+<h3>7.1 <code>dmd2_exp2_plus_reg</code> ties with teacher_50step on median CD vs. GT (Wilcoxon p = 0.54)</h3>
+<p>In Table A, the DMD2 hybrid ("Exp-2": GAN + regression) achieves median CD = 0.00226, slightly below teacher_50step's 0.00251. The paired Wilcoxon test on 105 samples gives p = 0.5362, well above any conventional significance threshold. The two methods are statistically indistinguishable on median CD vs. GT. This is a 1-step model matching a 50-step teacher.</p>
+
+<h3>7.2 <code>flashvdm</code>, <code>teacher_50step</code>, <code>dmd2_exp2_plus_reg</code>, <code>cd_4step</code>, <code>dmd2_exp1_canonical</code> cluster within ~30% of each other</h3>
+<p>Median CD vs. GT (Track A) for the top-5 H3D-2.1 methods: 0.00226, 0.00245, 0.00251, 0.00295, 0.00299. None of the pairwise differences within this cluster survive at p &lt; 0.05. At N=105 we cannot resolve the distinction. The real signal is that <strong>1-step distillation methods (Exp-1, Exp-2, flashvdm's 5-step turbo) match or exceed the 50-step teacher on median CD</strong>.</p>
+
+<h3>7.3 DMD1 vs. DMD2 canonical: tied under both references</h3>
+<p>DMD1 vs. DMD2 Exp-1 shows ns in both Table A (p = 0.15) and Table B (p = 0.91). The long-standing "DMD1 &gt; DMD2" impression from Part 1 (2026-04-08) stemmed from unfixed DMD2 implementation bugs (replay buffer conditioning, mu_fake gradient path) and from Part 1's teacher-reference-no-ICP evaluation that favors DMD1's objective. Post bug fix (Part 2, 2026-04-14) and under unified evaluation, the median CD is not separable.</p>
+
+<h3>7.4 Regression + GAN dominates either alone in the small-data regime</h3>
+<p>In Table A vs. GT, Exp-2 (hybrid) statistically beats both DMD1 (p &lt; 0.001) and Exp-1 (p = 0.039). In Table B vs. teacher, the same pattern holds (p = 0.0001 and p = 0.0159). With only 420 training samples, neither "teacher-pair regression alone" (DMD1) nor "GAN alone" (Exp-1 canonical) recovers the information that the hybrid captures. The original DMD2 paper discards regression; in this small-data regime that is a loss.</p>
+
+<h3>7.5 Frame-drift signature per method</h3>
+<p>The Track A vs. Track B gap (CD increase under identity alignment) quantifies how much ICP is recovering — effectively the student's frame drift relative to the reference:</p>
+<ul>
+<li>Teacher_50step has the smallest Track B CD vs. GT, so its native frame is closest to the GT canonical frame.</li>
+<li><code>dmd2_exp2_plus_reg</code> has the largest Track A→B CD increase vs. GT. The hybrid's frame sits between teacher and GT canonical, so ICP helps it most against GT. (Against teacher, its Track B is competitive: it tracks teacher's frame well.)</li>
+<li><code>dmd2_exp1_canonical</code> has the largest Track A→B increase vs. teacher, consistent with having no teacher anchor in its loss (regression-free).</li>
+<li><code>dmd1_k1</code> tracks the teacher frame tightly under both references (smallest drift vs. teacher) — a direct effect of its MSE-to-teacher-pairs objective.</li>
+</ul>
+
+<h3>7.6 Exp-3 failure is the empirical witness that GAN carries GT information</h3>
+<p>Removing the GAN branch from DMD2 — with regression also turned off — collapses the student entirely (all 105 samples fail). Since DMD1 succeeds with no GAN, the difference must be the information source: DMD1 uses teacher pairs; Exp-3 uses neither. The GAN's discriminator sees real GT-derived latents as "real" and provides an implicit GT-matching gradient to the student. In a data-free distillation regime this would be unavailable and the GAN branch inapplicable.</p>
+
+<h2>8. Caveats</h2>
+
+<div class="caveat">
+<ol>
+<li><strong>Single training seed per method.</strong> Each checkpoint is one training run. Variance across seeds — plausibly non-trivial for GAN-based methods (DMD2 variants) — is unquantified. A clean 3-seed replication is recommended before drawing strong conclusions about ≤10% differences.</li>
+<li><strong>Train and test share the Toys4k distribution.</strong> DMD2's GAN explicitly trains against the training-set real-latent distribution. On a held-out split from the same distribution, this confers a "distribution prior" advantage relative to DMD1 (teacher-only). An out-of-distribution test (e.g. ShapeNet, GSO) would calibrate this advantage. This is not train/test leakage — the 105 test samples are disjoint from the 420 training samples — but it is an algorithmic information asymmetry.</li>
+<li><strong>Reference-vs.-teacher eval is not fully symmetric.</strong> pc10K.npz is a 10k-point release cloud; teacher_50step is a 100k-point re-sample of the teacher's predicted mesh. The larger reference size makes ICP on the teacher reference ~10× slower but does not bias the relative model ordering.</li>
+<li><strong>N = 105 with one sample per Toys4k category</strong> limits statistical power. Close comparisons (|Δmedian| &lt; 3×10⁻⁴) cannot be resolved.</li>
+<li><strong>cd_4step ties Exp-2 vs. teacher (Δmedian +1.3×10⁻⁵, p = 0.81)</strong> and nearly ties vs. GT (Δmedian +8.2×10⁻⁵, p = 0.15). At N=105, our unified evaluation cannot distinguish the two. Any claim of "best distilled method" is sensitive to the reference choice and should acknowledge this.</li>
+<li><strong>flashvdm uses Hunyuan3D-2.0 weights</strong>, not 2.1. Its proximity to the teacher is partly a 2.0-vs-2.1 comparison rather than a pure distillation ablation. A fair v2.1 turbo VAE would require retraining.</li>
+</ol>
+</div>
+
+<h2>9. Reproducibility</h2>
+
+<p>All predictions were generated in prior runs and re-used without modification. Only the evaluation pipeline was re-run.</p>
+
+<table>
+<thead><tr><th>Asset</th><th>Location</th></tr></thead>
+<tbody>
+<tr><td>Unified eval run directory</td><td><code>results/distill_methods/runs/20260422_unified_dmd_eval/</code></td></tr>
+<tr><td>Config (vs GT)</td><td><code>.../vs_gt/config.yaml</code></td></tr>
+<tr><td>Config (vs teacher)</td><td><code>.../vs_teacher/config.yaml</code></td></tr>
+<tr><td>Summary CSVs</td><td><code>.../vs_{gt,teacher}/metrics/summary.csv</code></td></tr>
+<tr><td>Per-sample CSVs (paired Wilcoxon inputs)</td><td><code>.../vs_{gt,teacher}/metrics/per_sample.csv</code></td></tr>
+<tr><td>Eval script</td><td><code>pipeline/scripts/run_eval.py</code> (with <code>--reference-model</code> option added 2026-04-22)</td></tr>
+<tr><td>Predictions source (H3D family)</td><td>
+<code>20260421_cross_family/predictions/{teacher_50step,flashvdm,pd_6step,cd_4step}/default/</code><br>
+<code>20260414_dmd1_multistep/k1/predictions/dmd1_1step/default/</code><br>
+<code>20260414_dmd2_fix/{exp1,exp2,exp3}/predictions/dmd2_1step/default/</code></td></tr>
+<tr><td>Predictions source (TRELLIS)</td><td><code>20260421_cross_family/predictions/{trellis,mdt_dist,trellis2}/default/</code></td></tr>
+</tbody>
+</table>
+
+<p class="caveat" style="margin-top:20px;">Branch: <code>exp/two-axis-reorg</code>. Commit at eval time: HEAD (run_eval.py patched to accept <code>--reference-model</code>). The <code>--reference-model teacher_50step</code> option reuses the same cleaning/sampling/normalization/ICP pipeline as the GT case; only the reference point cloud source is swapped.</p>
+
+</body>
+</html>
