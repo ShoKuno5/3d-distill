@@ -23,7 +23,7 @@
 set -euo pipefail
 
 # Wandb API key (override via environment if needed)
-export WANDB_API_KEY="${WANDB_API_KEY:-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}"
+export WANDB_API_KEY="${WANDB_API_KEY:?WANDB_API_KEY must be exported (e.g. via sk5/.env sourced from ~/.bashrc)}"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
