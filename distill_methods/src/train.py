@@ -66,6 +66,48 @@ class LatentDataset(Dataset):
         }
 
 
+def assert_no_toys4k_in_train(dataset: Dataset) -> None:
+    """Hard-fail if any training object_id matches a Toys4k asset.
+
+    Toys4k is reserved for evaluation against the teacher and must never
+    enter the distillation training distribution. Object IDs are derived
+    from the npz filename (matches what prepare_training_data.py writes).
+    Two reference lists are checked:
+      data/toys4k_uids.txt   — TRELLIS-500K SHA-256 of every Toys4k asset
+      data/toys4k_names.txt  — legacy 'category_NNN' names from the
+                               Toys4k metadata file_identifier column
+    Either file missing or any overlap is a hard failure.
+    """
+    data_dir = _SRC_DIR.parent / "data"
+    uids_file = data_dir / "toys4k_uids.txt"
+    names_file = data_dir / "toys4k_names.txt"
+    if not uids_file.exists() or not names_file.exists():
+        raise FileNotFoundError(
+            f"Toys4k guard files missing: expected both {uids_file} and "
+            f"{names_file}. Cannot proceed — Toys4k must stay eval-only."
+        )
+
+    toys4k_uids = {ln.strip() for ln in uids_file.read_text().splitlines() if ln.strip()}
+    toys4k_names = {ln.strip() for ln in names_file.read_text().splitlines() if ln.strip()}
+    train_ids = {Path(f).stem for f in dataset.files}
+
+    uid_overlap = train_ids & toys4k_uids
+    name_overlap = train_ids & toys4k_names
+    if uid_overlap or name_overlap:
+        raise AssertionError(
+            f"Toys4k contamination in training set: "
+            f"{len(uid_overlap)} sha256 collisions, "
+            f"{len(name_overlap)} name collisions. Toys4k is eval-only.\n"
+            f"  sha256 examples: {sorted(uid_overlap)[:5]}\n"
+            f"  name examples:   {sorted(name_overlap)[:5]}"
+        )
+
+    logger.info(
+        "Toys4k guard OK: %d train ids checked vs %d sha256 + %d name refs, no overlap",
+        len(train_ids), len(toys4k_uids), len(toys4k_names),
+    )
+
+
 def make_dataloader(dataset: Dataset, config: dict, batch_size_override: int | None = None) -> DataLoader:
     """Create DataLoader with optional DistributedSampler."""
     train_cfg = config["training"]
@@ -134,6 +176,7 @@ def main():
 
     # Dataset
     dataset = LatentDataset(config["training"]["training_data_dir"])
+    assert_no_toys4k_in_train(dataset)
     dataloader = make_dataloader(dataset, config)
 
     # Method dispatch
