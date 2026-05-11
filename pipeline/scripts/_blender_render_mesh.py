@@ -33,8 +33,19 @@ args = parser.parse_args(argv)
 bpy.ops.wm.read_factory_settings(use_empty=True)
 scene = bpy.context.scene
 
-# --- Import OBJ ---
-bpy.ops.import_scene.obj(filepath=args.input, axis_forward='-Z', axis_up='Y')
+# --- Import mesh: dispatch on extension ---
+_ext = os.path.splitext(args.input)[1].lower()
+if _ext in (".glb", ".gltf"):
+    bpy.ops.import_scene.gltf(filepath=args.input)
+elif _ext == ".obj":
+    bpy.ops.import_scene.obj(filepath=args.input, axis_forward='-Z', axis_up='Y')
+elif _ext == ".ply":
+    bpy.ops.import_mesh.ply(filepath=args.input)
+elif _ext == ".stl":
+    bpy.ops.import_mesh.stl(filepath=args.input)
+else:
+    print(f"ERROR: Unsupported mesh extension: {_ext}")
+    sys.exit(1)
 
 # Select imported objects
 imported = [obj for obj in bpy.context.scene.objects if obj.type == 'MESH']
