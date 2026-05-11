@@ -1,0 +1,4 @@
+# Generated manifests — keep .gitignore but ignore CSV outputs
+# Re-create with: python distill_methods/scripts/create_manifests_trellis500k.py
+*/train.csv
+*/test.csv
