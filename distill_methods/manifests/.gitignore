@@ -1,4 +1,8 @@
-# Generated manifests — keep .gitignore but ignore CSV outputs
+# Generated training manifests — ignore CSV outputs
 # Re-create with: python distill_methods/scripts/create_manifests_trellis500k.py
 */train.csv
 */test.csv
+
+# But DO track curated hold-out eval sets (fixed reference, must not drift)
+!toys4k_eval_*/test.csv
+!toys4k_eval_*/train.csv
