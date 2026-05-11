@@ -84,6 +84,9 @@ class DMD2Distillation(DMD1Distillation):
         dmd2_cfg = config["training"]["methods"]["dmd2"]
 
         self.lambda_gan = dmd2_cfg["lambda_gan"]
+        # Inherited _student_generate (from DMD1) reads self.num_inference_steps.
+        # DMD2 skips DMD1.__init__, so set it here too. Default 1 (single-step DMD2).
+        self.num_inference_steps = dmd2_cfg.get("num_inference_steps", 1)
         self.d_update_ratio = dmd2_cfg["d_update_ratio"]
 
         # fake_score_adapter was created by inherited _add_extra_adapters()
