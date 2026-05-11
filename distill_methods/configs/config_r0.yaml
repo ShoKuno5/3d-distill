@@ -1,0 +1,117 @@
+# R0 reproduction config: rerun historical DSW 9-method inference on sk-train
+# ============================================================================
+# Goal: verify CD numbers from runs/20260421_cross_family/metrics/summary.csv
+# (teacher 8.5, DMD2 9.7, DMD1 15.1, ...) reproduce on sk-train with the
+# same LoRA checkpoints. Eval set: Toys4k 105 hold-out.
+#
+# LoRA checkpoints downloaded from HF dataset ShoKuno5/3d-gen-eval-r0-ckpts
+# into /inspire/.../sk5/r0_ckpts/. See plan §Reproduction Track R0.
+#
+# This run trains NOTHING. Inference only -> mesh metrics.
+
+# Dataset: Toys4k 105 hold-out (eval-only, never trained on)
+dataset:
+  name: toys4k_eval_105
+  root: /inspire/qb-ilm/project/qproject-assement/zhangkaipeng-24043/sk5/data/toys4k
+  manifest: /inspire/qb-ilm/project/qproject-assement/zhangkaipeng-24043/sk5/repos/3d-gen-eval/distill_methods/manifests/toys4k_eval_105/test.csv
+  test_manifest: /inspire/qb-ilm/project/qproject-assement/zhangkaipeng-24043/sk5/repos/3d-gen-eval/distill_methods/manifests/toys4k_eval_105/test.csv
+  max_samples: null
+  sample_ids_file: null
+  category_filter: null
+
+# No training in R0
+training:
+  training_data_dir: /tmp/r0_unused_training_data
+  batch_size: 1
+  num_workers: 0
+  seed: 42
+
+  optimizer: {type: AdamW, lr: 1.0e-5, weight_decay: 0.01}
+  model:
+    pretrained: tencent/Hunyuan3D-2.1
+    z_scale_factor: 1.0
+    lora: {rank: 64, alpha: 64, target_modules: [to_q, to_k, to_v, to_out.0]}
+    ema: {decay: 0.999, use_num_updates: true}
+  methods: {}
+  cfg: {guidance_scale: 7.5}
+
+# Output (sk-train scratch)
+output_root: /inspire/qb-ilm/project/qproject-assement/zhangkaipeng-24043/sk5/scratch/r0
+
+# Models: teacher + 5 own-trained distilled methods, explicit lora_path from R0 ckpts
+models:
+  - name: teacher_50step
+    method: null
+    description: "Hunyuan3D-2.1 teacher (50-step)"
+    mesh_filename: mesh_raw.obj
+    inference_params:
+      num_inference_steps: 50
+      guidance_scale: 7.5
+
+  - name: pd_6step
+    method: pd
+    description: "Progressive Distillation (6-step) [R0 from 20260406_1131/pd/step_final]"
+    mesh_filename: mesh_raw.obj
+    inference_params:
+      num_inference_steps: 6
+      guidance_scale: 1.0
+      lora_path: /inspire/qb-ilm/project/qproject-assement/zhangkaipeng-24043/sk5/r0_ckpts/pd
+
+  - name: cd_4step
+    method: cd
+    description: "Consistency Distillation (4-step) [R0 from 20260406_1131/cd/step_final]"
+    mesh_filename: mesh_raw.obj
+    inference_params:
+      num_inference_steps: 4
+      guidance_scale: 1.0
+      lora_path: /inspire/qb-ilm/project/qproject-assement/zhangkaipeng-24043/sk5/r0_ckpts/cd
+
+  - name: dmd1_1step
+    method: dmd1
+    description: "DMD1 (1-step) [R0 from 20260414_dmd1_multistep/k1/step_15000]"
+    mesh_filename: mesh_raw.obj
+    inference_params:
+      num_inference_steps: 1
+      guidance_scale: 1.0
+      lora_path: /inspire/qb-ilm/project/qproject-assement/zhangkaipeng-24043/sk5/r0_ckpts/dmd1
+
+  - name: dmd2_1step
+    method: dmd2
+    description: "DMD2 (1-step) [R0 from 20260414_dmd2_fix/exp1/step_15000]"
+    mesh_filename: mesh_raw.obj
+    inference_params:
+      num_inference_steps: 1
+      guidance_scale: 1.0
+      lora_path: /inspire/qb-ilm/project/qproject-assement/zhangkaipeng-24043/sk5/r0_ckpts/dmd2
+
+  - name: sid_1step
+    method: sid
+    description: "SiD (1-step) [R0 from 20260406_1131/sid/step_final]"
+    mesh_filename: mesh_raw.obj
+    inference_params:
+      num_inference_steps: 1
+      guidance_scale: 1.0
+      lora_path: /inspire/qb-ilm/project/qproject-assement/zhangkaipeng-24043/sk5/r0_ckpts/sid
+
+# Normalization / cleaning / sampling / alignment / metrics — identical to historical config
+normalization: {gt_method: unit_sphere, pred_method: unit_sphere}
+cleaning:
+  remove_nan: true
+  remove_inf: true
+  remove_degenerate_faces: true
+  remove_unreferenced_vertices: true
+  remove_tiny_components: true
+  tiny_component_threshold: 0.01
+sampling: {alignment_points: 100000, eval_points: 16384}
+alignment:
+  track_a: {method: similarity_icp, initial_rotations: 24, icp_max_iterations: 100, allow_reflection: false, allow_nonuniform_scale: false}
+  track_b: {method: scale_only, allow_rotation: false}
+metrics:
+  chamfer_distance: {variant: L2_squared}
+  f_score: {thresholds: [0.01, 0.02]}
+  hausdorff: true
+  mesh_quality_stats: true
+  bootstrap_ci: {enabled: true, n_bootstrap: 1000, confidence: 0.95}
+  frechet_distance:
+    enabled: false  # skip FD for R0 to save time; can add back later
+execution: {skip_existing: true, continue_on_failure: true, log_level: INFO}
