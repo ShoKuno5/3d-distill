@@ -147,6 +147,14 @@ def main():
     parser.add_argument("--resume", type=str, default=None, help="Checkpoint to resume from")
     parser.add_argument("--stage", type=int, default=0, help="PD stage index (0-based)")
     parser.add_argument("--output-dir", type=str, default=None, help="Override output_root from config")
+    parser.add_argument(
+        "--allow-toys4k-train", action="store_true",
+        help=(
+            "Bypass the Toys4k disjoint training guard. ONLY for R-track reproduction "
+            "experiments (e.g. R1: replicate DSW DMD2 with Toys4k 420 train → Toys4k 105 eval). "
+            "Default is enforce guard."
+        ),
+    )
     args = parser.parse_args()
 
     # Logging
@@ -176,7 +184,14 @@ def main():
 
     # Dataset
     dataset = LatentDataset(config["training"]["training_data_dir"])
-    assert_no_toys4k_in_train(dataset)
+    if args.allow_toys4k_train:
+        logger.warning(
+            "⚠ Toys4k guard BYPASSED via --allow-toys4k-train. "
+            "This is ONLY valid for R-track reproduction experiments. "
+            "All M-track scaling experiments must keep the guard enabled."
+        )
+    else:
+        assert_no_toys4k_in_train(dataset)
     dataloader = make_dataloader(dataset, config)
 
     # Method dispatch
