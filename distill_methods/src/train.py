@@ -163,12 +163,18 @@ def main():
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
 
-    # DDP init
-    if "RANK" in os.environ:
+    # DDP init (only when multi-process — single GPU runs skip DDP wrap).
+    # qzcli PyTorchJob sets RANK=0 even for single-instance single-GPU,
+    # which would trigger DDP wrapping and break DMD-family methods that
+    # switch between student/fake_score adapters (unused-param error).
+    world_size = int(os.environ.get("WORLD_SIZE", "1"))
+    if "RANK" in os.environ and world_size > 1:
         dist.init_process_group("nccl")
         local_rank = int(os.environ.get("LOCAL_RANK", "0"))
         torch.cuda.set_device(local_rank)
-        logger.info("DDP rank=%d local_rank=%d", dist.get_rank(), local_rank)
+        logger.info("DDP rank=%d local_rank=%d world_size=%d", dist.get_rank(), local_rank, world_size)
+    else:
+        logger.info("Single-process mode (world_size=%d)", world_size)
 
     # Config
     with open(args.config) as f:
