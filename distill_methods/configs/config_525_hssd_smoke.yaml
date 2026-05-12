@@ -1,16 +1,21 @@
 dataset:
-  name: toys4k_eval_105
-  root: /inspire/qb-ilm/project/qproject-assement/zhangkaipeng-24043/sk5/data/toys4k
-  manifest: /inspire/qb-ilm/project/qproject-assement/zhangkaipeng-24043/sk5/repos/3d-gen-eval/distill_methods/manifests/toys4k_eval_105/test.csv
+  name: trellis500k_hssd_525
+  root: /inspire/qb-ilm/project/qproject-assement/zhangkaipeng-24043/sk5/data/trellis500k
+  manifest: /inspire/qb-ilm/project/qproject-assement/zhangkaipeng-24043/sk5/repos/3d-gen-eval/distill_methods/manifests/525_hssd/train.csv
   test_manifest: /inspire/qb-ilm/project/qproject-assement/zhangkaipeng-24043/sk5/repos/3d-gen-eval/distill_methods/manifests/toys4k_eval_105/test.csv
   max_samples: null
-  sample_ids_file: /inspire/qb-ilm/project/qproject-assement/zhangkaipeng-24043/sk5/repos/3d-gen-eval/distill_methods/manifests/toys4k_eval_105/whitelist_100.txt
+  sample_ids_file: null
   category_filter: null
 training:
-  training_data_dir: /tmp/r0_unused_training_data
+  training_data_dir: /inspire/qb-ilm/project/qproject-assement/zhangkaipeng-24043/sk5/scratch/distill_methods/525_hssd/training_data
   batch_size: 1
-  num_workers: 0
+  num_workers: 4
   seed: 42
+  bf16: true
+  gradient_clip: 1.0
+  log_interval: 1
+  save_interval: 100
+  total_steps: 5
   optimizer:
     type: AdamW
     lr: 1.0e-05
@@ -29,13 +34,38 @@ training:
     ema:
       decay: 0.999
       use_num_updates: true
-  methods: {}
+  methods:
+    pd:
+      stages:
+      - - 50
+        - 25
+      - - 25
+        - 12
+      - - 12
+        - 6
+      steps_per_stage: 5000
+    cd:
+      num_timesteps: 50
+    dmd1:
+      lambda_reg: 1.0
+      pairs_dir: /inspire/qb-ilm/project/qproject-assement/zhangkaipeng-24043/sk5/scratch/distill_methods/525_hssd/dmd1_pairs
+      num_pairs: 20000
+    dmd2:
+      lr_d: 5.0e-05
+      lambda_gan: 0.1
+      d_update_ratio: 5
+      replay_buffer_size: 32
+      replay_warmup: 4
+    sid:
+      lsg_teacher_scale: 11.25
+      lsg_fake_scale: 0.0
+      grad_norm_type: adaptive
   cfg:
     guidance_scale: 7.5
-output_root: /inspire/qb-ilm/project/qproject-assement/zhangkaipeng-24043/sk5/scratch/r0
+output_root: /inspire/qb-ilm/project/qproject-assement/zhangkaipeng-24043/sk5/scratch/qzcli_smoke
 models:
 - name: teacher_50step
-  method: null
+  version: '2.1'
   description: Hunyuan3D-2.1 teacher (50-step)
   mesh_filename: mesh_raw.obj
   inference_params:
@@ -43,44 +73,32 @@ models:
     guidance_scale: 7.5
 - name: pd_6step
   method: pd
-  description: Progressive Distillation (6-step) [R0 from 20260406_1131/pd/step_final]
+  description: Progressive Distillation (6-step)
   mesh_filename: mesh_raw.obj
   inference_params:
     num_inference_steps: 6
     guidance_scale: 1.0
-    lora_path: /inspire/qb-ilm/project/qproject-assement/zhangkaipeng-24043/sk5/r0_ckpts/pd
 - name: cd_4step
   method: cd
-  description: Consistency Distillation (4-step) [R0 from 20260406_1131/cd/step_final]
+  description: Consistency Distillation (4-step)
   mesh_filename: mesh_raw.obj
   inference_params:
     num_inference_steps: 4
     guidance_scale: 1.0
-    lora_path: /inspire/qb-ilm/project/qproject-assement/zhangkaipeng-24043/sk5/r0_ckpts/cd
 - name: dmd1_1step
   method: dmd1
-  description: DMD1 (1-step) [R0 from 20260414_dmd1_multistep/k1/step_15000]
+  description: DMD1 (1-step)
   mesh_filename: mesh_raw.obj
   inference_params:
     num_inference_steps: 1
     guidance_scale: 1.0
-    lora_path: /inspire/qb-ilm/project/qproject-assement/zhangkaipeng-24043/sk5/r0_ckpts/dmd1
 - name: dmd2_1step
   method: dmd2
-  description: DMD2 (1-step) [R0 from 20260414_dmd2_fix/exp1/step_15000]
+  description: DMD2 (1-step)
   mesh_filename: mesh_raw.obj
   inference_params:
     num_inference_steps: 1
     guidance_scale: 1.0
-    lora_path: /inspire/qb-ilm/project/qproject-assement/zhangkaipeng-24043/sk5/r0_ckpts/dmd2
-- name: sid_1step
-  method: sid
-  description: SiD (1-step) [R0 from 20260406_1131/sid/step_final]
-  mesh_filename: mesh_raw.obj
-  inference_params:
-    num_inference_steps: 1
-    guidance_scale: 1.0
-    lora_path: /inspire/qb-ilm/project/qproject-assement/zhangkaipeng-24043/sk5/r0_ckpts/sid
 normalization:
   gt_method: unit_sphere
   pred_method: unit_sphere
@@ -114,15 +132,23 @@ metrics:
   hausdorff: true
   mesh_quality_stats: true
   bootstrap_ci:
-    enabled: false
+    enabled: true
     n_bootstrap: 1000
     confidence: 0.95
   frechet_distance:
-    enabled: false
+    enabled: true
+    models:
+    - inception_v3
+    - dinov2
+    multiview:
+      azimuths:
+      - 0
+      - 90
+      - 180
+      - 270
+      elevation: 30
+      resolution: 512
 execution:
   skip_existing: true
   continue_on_failure: true
   log_level: INFO
-wandb:
-  project: Hunyuan3D21_distillation
-  entity: shokuno-the-university-of-tokyo
