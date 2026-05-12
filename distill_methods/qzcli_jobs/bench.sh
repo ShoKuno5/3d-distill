@@ -28,6 +28,15 @@ if ! ldconfig -p | grep -q "libGL.so.1"; then
     apt-get install -y -qq libgl1 libsm6 libxrender1 libxfixes3 libxi6 libxkbcommon0 2>&1 | tail -5
 fi
 
+# Pre-link cache symlinks so hy3dgen / huggingface_hub reuse gpfs cache
+# instead of re-downloading 14GB+6.9GB on every qzcli job. (sk-train had
+# these symlinks created at setup time; qzcli containers start fresh.)
+# [pre-link cache symlinks]
+mkdir -p /root/.cache
+[ ! -e /root/.cache/hy3dgen ]      && ln -sfn "$SK5/hy3dgen_cache" /root/.cache/hy3dgen
+[ ! -e /root/.cache/huggingface ]  && ln -sfn "$SK5/hf_cache"      /root/.cache/huggingface
+ls -la /root/.cache/ | head -5
+
 REPO="$SK5/repos/3d-gen-eval"
 H="$REPO/models/hunyuan3d21"
 cd "$H/hy3dshape"

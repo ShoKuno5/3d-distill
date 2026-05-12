@@ -33,6 +33,11 @@ if ! ldconfig -p | grep -q "libGL.so.1"; then
 fi
 
 SK5=/inspire/qb-ilm/project/qproject-assement/zhangkaipeng-24043/sk5
+mkdir -p /root/.cache
+[ ! -e /root/.cache/hy3dgen ]      && ln -sfn "$SK5/hy3dgen_cache" /root/.cache/hy3dgen
+[ ! -e /root/.cache/huggingface ]  && ln -sfn "$SK5/hf_cache"      /root/.cache/huggingface
+ls -la /root/.cache/ | head -5
+
 REPO="$SK5/repos/3d-gen-eval"
 H="$REPO/models/hunyuan3d21"
 
