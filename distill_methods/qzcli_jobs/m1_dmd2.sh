@@ -20,6 +20,15 @@ LOG="$LOGDIR/$(basename ${0%.*})_$(hostname)_$(date +%Y%m%d_%H%M%S).log"
 exec > >(tee -a "$LOG") 2>&1
 echo "[log mirror: $LOG]"
 
+# Ensure runtime shared libs needed by pymeshlab / opencv-headless / blender
+# are present (sk-train overlay has them; qzcli container image may not).
+if ! ldconfig -p | grep -q "libGL.so.1"; then
+    echo "[setup] installing libgl1 libsm6 libxrender1 libxfixes3 libxi6 libxkbcommon0 ..."
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update -qq 2>&1 | tail -3 || true
+    apt-get install -y -qq libgl1 libsm6 libxrender1 libxfixes3 libxi6 libxkbcommon0 2>&1 | tail -5
+fi
+
 SK5=/inspire/qb-ilm/project/qproject-assement/zhangkaipeng-24043/sk5
 REPO="$SK5/repos/3d-gen-eval"
 H="$REPO/models/hunyuan3d21"
