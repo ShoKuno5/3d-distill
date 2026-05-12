@@ -16,6 +16,15 @@
 
 set -euo pipefail
 
+# Mirror all stdout/stderr to a persistent gpfs log so it can be inspected
+# from sk-train without going through qzcli watch.
+SK5=/inspire/qb-ilm/project/qproject-assement/zhangkaipeng-24043/sk5
+LOGDIR="$SK5/scratch/qzcli_logs"
+mkdir -p "$LOGDIR"
+LOG="$LOGDIR/$(basename ${0%.*})_$(hostname)_$(date +%Y%m%d_%H%M%S).log"
+exec > >(tee -a "$LOG") 2>&1
+echo "[log mirror: $LOG]"
+
 SK5=/inspire/qb-ilm/project/qproject-assement/zhangkaipeng-24043/sk5
 REPO="$SK5/repos/3d-gen-eval"
 H="$REPO/models/hunyuan3d21"
