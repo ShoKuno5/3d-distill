@@ -49,6 +49,7 @@ cd "$H/hy3dshape"
 export HF_HOME="$SK5/hf_cache"
 export PYTHONPATH=".:$REPO/distill_methods/src"
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+export WANDB_MODE=offline  # qzcli container can not reach api.wandb.ai — log locally, sync from sk-train later
 
 [ -f "$SK5/.env" ] && set -a && . "$SK5/.env" && set +a
 : "${WANDB_API_KEY:?WANDB_API_KEY must be set}"
