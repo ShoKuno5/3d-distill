@@ -6,3 +6,7 @@
 # But DO track curated hold-out eval sets (fixed reference, must not drift)
 !toys4k_eval_*/test.csv
 !toys4k_eval_*/train.csv
+
+# And: R1 reproduction uses fixed Toys4k train set (path-translated from
+# DSW historical 420 split). Track these so R1 is reproducible.
+!toys4k_train_*/train.csv
