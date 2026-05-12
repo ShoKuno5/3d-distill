@@ -166,7 +166,7 @@ def main():
     # DDP init
     if "RANK" in os.environ:
         dist.init_process_group("nccl")
-        local_rank = int(os.environ["LOCAL_RANK"])
+        local_rank = int(os.environ.get("LOCAL_RANK", "0"))
         torch.cuda.set_device(local_rank)
         logger.info("DDP rank=%d local_rank=%d", dist.get_rank(), local_rank)
 
