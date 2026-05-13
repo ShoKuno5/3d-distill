@@ -2,6 +2,10 @@
 
 Distillation experiments for single-image 3D generation models (HY3D-2.1, TRELLIS 2.0). Includes the evaluation infrastructure (geometry metrics on Toys4k: Chamfer / F-score / Hausdorff) used as the downstream benchmark for each distilled student.
 
+## Models layout
+
+`models/{hunyuan3d21,trellis2,mdt_dist}/` are symlinks to `~/sk5/models/` (shared across projects). Each target is its own git clone — edit / pull there and all projects pick up the change. See `docs/model_notes.md` for shortname → repo mapping.
+
 ## Active Models
 
 | Shortname | Model | Directory | Environment |
