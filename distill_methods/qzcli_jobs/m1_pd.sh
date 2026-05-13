@@ -33,7 +33,7 @@ mkdir -p /root/.cache
 [ ! -e /root/.cache/hy3dgen ]     && ln -sfn "$SK5/hy3dgen_cache" /root/.cache/hy3dgen
 [ ! -e /root/.cache/huggingface ] && ln -sfn "$SK5/hf_cache"      /root/.cache/huggingface
 
-REPO="$SK5/repos/3d-gen-eval"
+REPO="$SK5/repos/3d-distill"
 H="$REPO/models/hunyuan3d21"
 
 # OUTPUT_ROOT: if M1_PD_OUTPUT_ROOT is exported (continuation case), reuse it.

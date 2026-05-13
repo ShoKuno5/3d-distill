@@ -29,7 +29,7 @@ mkdir -p /root/.cache
 [ ! -e /root/.cache/hy3dgen ]     && ln -sfn "$SK5/hy3dgen_cache" /root/.cache/hy3dgen
 [ ! -e /root/.cache/huggingface ] && ln -sfn "$SK5/hf_cache"      /root/.cache/huggingface
 
-REPO="$SK5/repos/3d-gen-eval"
+REPO="$SK5/repos/3d-distill"
 H="$REPO/models/hunyuan3d21"
 RUN_NAME="m1_cd_$(date +%Y%m%d_%H%M)"
 OUTPUT_ROOT="$SK5/scratch/distill_methods/$RUN_NAME"

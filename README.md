@@ -1,7 +1,6 @@
-# 3D Generation Model Evaluation
+# 3D Distillation
 
-Quantitative benchmark comparing single-image 3D reconstruction models on a Toys4k subset.
-Measures Chamfer Distance, F-score, Hausdorff Distance, and other geometry metrics.
+Distillation experiments for single-image 3D generation models (HY3D-2.1, TRELLIS 2.0). Includes the evaluation infrastructure (geometry metrics on Toys4k: Chamfer / F-score / Hausdorff) used as the downstream benchmark for each distilled student.
 
 ## Active Models
 

@@ -38,7 +38,7 @@ mkdir -p /root/.cache
 [ ! -e /root/.cache/huggingface ]  && ln -sfn "$SK5/hf_cache"      /root/.cache/huggingface
 ls -la /root/.cache/ | head -5
 
-REPO="$SK5/repos/3d-gen-eval"
+REPO="$SK5/repos/3d-distill"
 H="$REPO/models/hunyuan3d21"
 
 echo "================================================================"

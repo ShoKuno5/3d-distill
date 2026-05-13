@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-3D generation model evaluation & distillation workspace. Comparison pipeline + 5 model repos.
+3D distillation workspace (primary focus) with evaluation infrastructure as benchmark. Comparison pipeline + 5 model repos.
 
 Key docs: `docs/architecture_survey.md`, `docs/experiment_plan.md`
 

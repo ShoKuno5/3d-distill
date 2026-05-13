@@ -26,7 +26,7 @@ import numpy as np
 import trimesh
 import yaml
 
-PROJECT_DIR = Path("/inspire/qb-ilm/project/qproject-assement/zhangkaipeng-24043/sk5/repos/3d-gen-eval")
+PROJECT_DIR = Path("/inspire/qb-ilm/project/qproject-assement/zhangkaipeng-24043/sk5/repos/3d-distill")
 sys.path.insert(0, str(PROJECT_DIR / "pipeline"))
 
 from src.geometry.normalize import normalize_to_unit_sphere  # noqa: E402

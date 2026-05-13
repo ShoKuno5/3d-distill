@@ -1,10 +1,10 @@
 dataset:
   name: toys4k_eval_105
   root: /inspire/qb-ilm/project/qproject-assement/zhangkaipeng-24043/sk5/data/toys4k
-  manifest: /inspire/qb-ilm/project/qproject-assement/zhangkaipeng-24043/sk5/repos/3d-gen-eval/distill_methods/manifests/toys4k_eval_105/test.csv
-  test_manifest: /inspire/qb-ilm/project/qproject-assement/zhangkaipeng-24043/sk5/repos/3d-gen-eval/distill_methods/manifests/toys4k_eval_105/test.csv
+  manifest: /inspire/qb-ilm/project/qproject-assement/zhangkaipeng-24043/sk5/repos/3d-distill/distill_methods/manifests/toys4k_eval_105/test.csv
+  test_manifest: /inspire/qb-ilm/project/qproject-assement/zhangkaipeng-24043/sk5/repos/3d-distill/distill_methods/manifests/toys4k_eval_105/test.csv
   max_samples: null
-  sample_ids_file: /inspire/qb-ilm/project/qproject-assement/zhangkaipeng-24043/sk5/repos/3d-gen-eval/distill_methods/manifests/toys4k_eval_105/whitelist_100.txt
+  sample_ids_file: /inspire/qb-ilm/project/qproject-assement/zhangkaipeng-24043/sk5/repos/3d-distill/distill_methods/manifests/toys4k_eval_105/whitelist_100.txt
   category_filter: null
 training:
   training_data_dir: /tmp/r0_unused_training_data

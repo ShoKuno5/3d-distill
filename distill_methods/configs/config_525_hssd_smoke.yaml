@@ -1,8 +1,8 @@
 dataset:
   name: trellis500k_hssd_525
   root: /inspire/qb-ilm/project/qproject-assement/zhangkaipeng-24043/sk5/data/trellis500k
-  manifest: /inspire/qb-ilm/project/qproject-assement/zhangkaipeng-24043/sk5/repos/3d-gen-eval/distill_methods/manifests/525_hssd/train.csv
-  test_manifest: /inspire/qb-ilm/project/qproject-assement/zhangkaipeng-24043/sk5/repos/3d-gen-eval/distill_methods/manifests/toys4k_eval_105/test.csv
+  manifest: /inspire/qb-ilm/project/qproject-assement/zhangkaipeng-24043/sk5/repos/3d-distill/distill_methods/manifests/525_hssd/train.csv
+  test_manifest: /inspire/qb-ilm/project/qproject-assement/zhangkaipeng-24043/sk5/repos/3d-distill/distill_methods/manifests/toys4k_eval_105/test.csv
   max_samples: null
   sample_ids_file: null
   category_filter: null

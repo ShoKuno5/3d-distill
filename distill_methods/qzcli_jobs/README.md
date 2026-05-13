@@ -27,7 +27,7 @@
 # 1. SMOKE — env 動作確認
 ~/.qzcli_venv/bin/qzcli create \
   -n smoke-distill3d \
-  -c "bash /inspire/qb-ilm/project/qproject-assement/zhangkaipeng-24043/sk5/repos/3d-gen-eval/distill_methods/qzcli_jobs/smoke.sh" \
+  -c "bash /inspire/qb-ilm/project/qproject-assement/zhangkaipeng-24043/sk5/repos/3d-distill/distill_methods/qzcli_jobs/smoke.sh" \
   -w ws-9dcc0e1f-80a4-4af2-bc2f-0e352e7b17e6 \
   -g lcg-79b2ad0e-a375-43f3-a0b1-b4ce79710fd7 \
   --instances 1
@@ -36,12 +36,12 @@
 # 2. SMOKE 結果見て OK なら、本番 2 並列投入
 ~/.qzcli_venv/bin/qzcli create \
   -n m1-dmd2 \
-  -c "bash /inspire/.../sk5/repos/3d-gen-eval/distill_methods/qzcli_jobs/m1_dmd2.sh" \
+  -c "bash /inspire/.../sk5/repos/3d-distill/distill_methods/qzcli_jobs/m1_dmd2.sh" \
   -w ws-9dcc0e1f-... -g lcg-<H100> --instances 1 --spec <2xH100 spec>
 
 ~/.qzcli_venv/bin/qzcli create \
   -n r1-dmd2 \
-  -c "bash /inspire/.../sk5/repos/3d-gen-eval/distill_methods/qzcli_jobs/r1_dmd2.sh" \
+  -c "bash /inspire/.../sk5/repos/3d-distill/distill_methods/qzcli_jobs/r1_dmd2.sh" \
   -w ws-9dcc0e1f-... -g lcg-<H100> --instances 1 --spec <2xH100 spec>
 
 # 3. 監視
