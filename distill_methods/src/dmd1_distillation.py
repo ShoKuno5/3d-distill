@@ -14,6 +14,7 @@ Loss_student = L_distill (KL via score diff) + lambda_reg * L_regress (MSE pairs
 
 import logging
 import os
+from contextlib import nullcontext
 from glob import glob
 
 import numpy as np
@@ -252,6 +253,9 @@ class DMD1Distillation(BaseDistiller):
 
         self.optimizer_fake.zero_grad()
         loss_fake.backward()
+        # Caller is expected to wrap this call in self.student.no_sync(),
+        # which suppresses DDP's automatic all-reduce, so we sync manually.
+        self._sync_grads(self.fake_score_adapter.fake_score_params())
         torch.nn.utils.clip_grad_norm_(
             self.fake_score_adapter.fake_score_params(),
             self.config["training"]["gradient_clip"],
@@ -273,7 +277,13 @@ class DMD1Distillation(BaseDistiller):
         Phase 2: Update student with L_distill + lambda_reg * L_regress.
         """
         # --- Phase 1: Update fake score ---
-        loss_fake = self._train_fake_score(batch)
+        # no_sync() suppresses DDP's all-reduce inside _train_fake_score so
+        # Phase 2's student backward is not blocked by an unfinished reducer
+        # state from the fake_score adapter pass. _train_fake_score does
+        # manual all-reduce via _sync_grads before optimizer_fake.step().
+        no_sync = self.student.no_sync if self.is_distributed else nullcontext
+        with no_sync():
+            loss_fake = self._train_fake_score(batch)
 
         # --- Phase 2: Update student ---
         x_data = batch["latent"]

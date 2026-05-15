@@ -14,6 +14,7 @@ Components:
 import logging
 import os
 from collections import deque
+from contextlib import nullcontext
 
 import torch
 import torch.nn as nn
@@ -293,6 +294,11 @@ class DMD2Distillation(DMD1Distillation):
 
         self.optimizer_d.zero_grad()
         loss_d.backward()
+        # Caller wraps this in self.student.no_sync(), so fake_score grads
+        # are not auto-reduced by DDP. Discriminator is not DDP-wrapped at
+        # all, so its grads are always rank-local and need manual sync too.
+        self._sync_grads(self.discriminator.parameters())
+        self._sync_grads(self.fake_score_adapter.fake_score_params())
         self.optimizer_d.step()
 
         # Bug 2 fix: also step mu_fake with GAN classification gradients
@@ -321,12 +327,24 @@ class DMD2Distillation(DMD1Distillation):
         # NOTE: same batch conditioning reused for all K iterations; fresh noise
         # is generated inside each sub-step. Ideally each iteration would use
         # a fresh batch, but this requires a secondary dataloader iterator.
+        #
+        # DDP note: each sub-iter does forward+backward through the DDP-wrapped
+        # student with the fake_score adapter active. With find_unused_parameters
+        # =True, the reducer enters "reduction in progress" after backward and
+        # the next forward in the loop trips "Expected to have finished
+        # reduction in the prior iteration". Wrap the whole loop in no_sync()
+        # so the reducer never activates; sub-iter grads are accumulated
+        # locally and synced manually via _sync_grads inside _train_fake_score
+        # and _train_discriminator. Phase 3 below runs outside no_sync so
+        # the student update uses DDP's normal all-reduce path.
+        no_sync = self.student.no_sync if self.is_distributed else nullcontext
         loss_fake = torch.tensor(0.0, device=self.device)
         loss_d = torch.tensor(0.0, device=self.device)
         for _ in range(self.d_update_ratio):
-            loss_fake = self._train_fake_score(batch)
-            if len(self.replay_buffer) >= batch_size:
-                loss_d = self._train_discriminator(batch)
+            with no_sync():
+                loss_fake = self._train_fake_score(batch)
+                if len(self.replay_buffer) >= batch_size:
+                    loss_d = self._train_discriminator(batch)
 
         # --- Phase 3: Update student (KL + GAN) ---
         x_data = batch["latent"]

@@ -195,6 +195,21 @@ class BaseDistiller:
             weight_decay=opt_cfg["weight_decay"],
         )
 
+    def _sync_grads(self, params):
+        """All-reduce gradients across ranks with AVG.
+
+        Used when DDP's automatic all-reduce is suppressed via
+        ``student.no_sync()`` (e.g. DMD1/DMD2 TTUR sub-iterations that
+        run multiple forward/backward pairs per training_step), and for
+        non-DDP-wrapped modules trained alongside the student (DMD2's
+        discriminator). No-op when not distributed.
+        """
+        if not self.is_distributed:
+            return
+        for p in params:
+            if p.grad is not None:
+                dist.all_reduce(p.grad, op=dist.ReduceOp.AVG)
+
     # ------------------------------------------------------------------
     # Flow Matching primitives (ICPlan convention)
     #   x_t = t * x_data + (1-t) * noise
