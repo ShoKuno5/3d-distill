@@ -11,7 +11,7 @@
 #
 # Submit: qsub -ar 6925 -g tga-koike-shanda m1_cd.sh
 
-source "$(dirname "$0")/_common.sh"
+source "${COMMON_SH:-/gs/fs/tga-koike-shanda2/sk/3d-distill/distill_methods/tsubame_jobs/_common.sh}"
 tsubame_log_init "m1_cd"
 tsubame_setup_env
 
