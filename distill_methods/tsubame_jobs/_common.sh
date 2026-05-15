@@ -2,7 +2,7 @@
 # Shared setup for TSUBAME 4.0 distill jobs.
 #
 # Layout assumptions:
-#   TSUBAME_ROOT=/gs/fs/tga-koike-shanda/kuno
+#   TSUBAME_ROOT=/gs/fs/tga-koike-shanda2/sk
 #     ├── 3d-distill/              (repo clone, this branch: exp/scaling-experiments)
 #     │   └── .venv/               (uv venv, Python 3.10)
 #     ├── hf_cache/                (HuggingFace cache; tencent/Hunyuan3D-2.1)
@@ -19,7 +19,7 @@
 
 set -euo pipefail
 
-TSUBAME_ROOT="${TSUBAME_ROOT:-/gs/fs/tga-koike-shanda/kuno}"
+TSUBAME_ROOT="${TSUBAME_ROOT:-/gs/fs/tga-koike-shanda2/sk}"
 REPO="$TSUBAME_ROOT/3d-distill"
 VENV="$REPO/.venv"
 PY="$VENV/bin/python"

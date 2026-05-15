@@ -8,7 +8,7 @@ qzcli (SII) 上の `qzcli_jobs/` を TSUBAME UGE/SGE スケジューラ向けに
 - アカウント: Erwin の `uh05887`、グループ `tga-koike-shanda`
 - ストレージレイアウト:
   ```
-  /gs/fs/tga-koike-shanda/kuno/        (SSD 3T, code + venv + ckpt)
+  /gs/fs/tga-koike-shanda2/sk/        (SSD 3T, code + venv + ckpt)
     ├── 3d-distill/                    (this repo)
     │   └── .venv/                     (uv venv, Python 3.10)
     ├── hf_cache/                      (~14 GB, tencent/Hunyuan3D-2.1)
@@ -39,15 +39,15 @@ qzcli (SII) 上の `qzcli_jobs/` を TSUBAME UGE/SGE スケジューラ向けに
 ```bash
 # 0. interactive で smoke
 qrsh -l node_q=1 -ar 6925 -g tga-koike-shanda -l h_rt=1:00:00
-bash /gs/fs/tga-koike-shanda/kuno/3d-distill/distill_methods/tsubame_jobs/smoke.sh
+bash /gs/fs/tga-koike-shanda2/sk/3d-distill/distill_methods/tsubame_jobs/smoke.sh
 
 # 1. smoke OK なら 4 method 一括投入
-bash /gs/fs/tga-koike-shanda/kuno/3d-distill/distill_methods/tsubame_jobs/launch_m1_4method.sh 6925
+bash /gs/fs/tga-koike-shanda2/sk/3d-distill/distill_methods/tsubame_jobs/launch_m1_4method.sh 6925
 
 # 2. 監視
 qstat                      # ジョブ一覧
 qstat -j <job_id>          # 詳細
-tail -F /gs/fs/tga-koike-shanda/kuno/scratch/tsubame_logs/m1_*.log
+tail -F /gs/fs/tga-koike-shanda2/sk/scratch/tsubame_logs/m1_*.log
 
 # 3. 削除
 qdel <job_id>

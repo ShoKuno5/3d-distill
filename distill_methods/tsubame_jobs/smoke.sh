@@ -4,7 +4,7 @@
 #$ -l h_rt=1:00:00
 #$ -N tsubame-smoke
 #$ -j y
-#$ -o /gs/fs/tga-koike-shanda/kuno/scratch/tsubame_logs/smoke.qsub.log
+#$ -o /gs/fs/tga-koike-shanda2/sk/scratch/tsubame_logs/smoke.qsub.log
 #
 # TSUBAME smoke job: verify env on H100 96GB node before launching M1 production.
 #

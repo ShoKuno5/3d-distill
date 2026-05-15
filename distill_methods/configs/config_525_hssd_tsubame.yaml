@@ -1,13 +1,13 @@
 dataset:
   name: trellis500k_hssd_525
-  root: /gs/fs/tga-koike-shanda/kuno/data/trellis500k
-  manifest: /gs/fs/tga-koike-shanda/kuno/3d-distill/distill_methods/manifests/525_hssd/train.csv
-  test_manifest: /gs/fs/tga-koike-shanda/kuno/3d-distill/distill_methods/manifests/toys4k_eval_105/test.csv
+  root: /gs/fs/tga-koike-shanda2/sk/data/trellis500k
+  manifest: /gs/fs/tga-koike-shanda2/sk/3d-distill/distill_methods/manifests/525_hssd/train.csv
+  test_manifest: /gs/fs/tga-koike-shanda2/sk/3d-distill/distill_methods/manifests/toys4k_eval_105/test.csv
   max_samples: null
   sample_ids_file: null
   category_filter: null
 training:
-  training_data_dir: /gs/fs/tga-koike-shanda/kuno/data/525_hssd/training_data
+  training_data_dir: /gs/fs/tga-koike-shanda2/sk/data/525_hssd/training_data
   batch_size: 4
   num_workers: 4
   seed: 42
@@ -48,7 +48,7 @@ training:
       num_timesteps: 50
     dmd1:
       lambda_reg: 1.0
-      pairs_dir: /gs/fs/tga-koike-shanda/kuno/data/525_hssd/dmd1_pairs
+      pairs_dir: /gs/fs/tga-koike-shanda2/sk/data/525_hssd/dmd1_pairs
       num_pairs: 20000
     dmd2:
       lr_d: 5.0e-05
@@ -62,7 +62,7 @@ training:
       grad_norm_type: adaptive
   cfg:
     guidance_scale: 7.5
-output_root: /gs/fs/tga-koike-shanda/kuno/scratch/distill_methods/525_hssd
+output_root: /gs/fs/tga-koike-shanda2/sk/scratch/distill_methods/525_hssd
 models:
 - name: teacher_50step
   version: '2.1'

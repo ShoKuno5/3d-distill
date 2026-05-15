@@ -4,7 +4,7 @@
 #$ -l h_rt=24:00:00
 #$ -N m1dmd1-tsubame
 #$ -j y
-#$ -o /gs/fs/tga-koike-shanda/kuno/scratch/tsubame_logs/m1_dmd1.qsub.log
+#$ -o /gs/fs/tga-koike-shanda2/sk/scratch/tsubame_logs/m1_dmd1.qsub.log
 #
 # TSUBAME M1 DMD1 (Distribution Matching Distillation, multistep) on H100 96GB.
 #   - Step 1: pair generation if missing (skipped if pairs_dir already populated)

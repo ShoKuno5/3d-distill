@@ -14,7 +14,7 @@ AR_ID="${1:-6925}"
 GROUP="tga-koike-shanda"
 SH="$(cd "$(dirname "$0")" && pwd)"
 
-mkdir -p /gs/fs/tga-koike-shanda/kuno/scratch/tsubame_logs
+mkdir -p /gs/fs/tga-koike-shanda2/sk/scratch/tsubame_logs
 
 for METHOD in pd cd dmd1 dmd2; do
     echo "================================================================"

@@ -4,7 +4,7 @@
 #$ -l h_rt=2:00:00
 #$ -N tsubame-setup
 #$ -j y
-#$ -o /gs/fs/tga-koike-shanda/kuno/scratch/tsubame_logs/setup_env.qsub.log
+#$ -o /gs/fs/tga-koike-shanda2/sk/scratch/tsubame_logs/setup_env.qsub.log
 #
 # One-shot environment bootstrap for TSUBAME H100 distill jobs.
 # Idempotent: rerunnable; existing artifacts are skipped.
@@ -17,20 +17,20 @@
 #   5. HF snapshot_download tencent/Hunyuan3D-2.1 → hf_cache
 #
 # Prereqs (done manually before submit):
-#   - mkdir -p /gs/fs/tga-koike-shanda/kuno
-#   - cd /gs/fs/tga-koike-shanda/kuno && git clone -b exp/scaling-experiments \
+#   - mkdir -p /gs/fs/tga-koike-shanda2/sk
+#   - cd /gs/fs/tga-koike-shanda2/sk && git clone -b exp/scaling-experiments \
 #       https://github.com/ShoKuno5/3d-distill.git
-#   - echo "WANDB_API_KEY=..." > /gs/fs/tga-koike-shanda/kuno/3d-distill/.env (chmod 600)
+#   - echo "WANDB_API_KEY=..." > /gs/fs/tga-koike-shanda2/sk/3d-distill/.env (chmod 600)
 #
 # Submit (no -ar needed; cpu_16 fits in queue without consuming reservation):
-#   qsub -g tga-koike-shanda /gs/fs/tga-koike-shanda/kuno/3d-distill/distill_methods/tsubame_jobs/setup_env.sh
+#   qsub -g tga-koike-shanda /gs/fs/tga-koike-shanda2/sk/3d-distill/distill_methods/tsubame_jobs/setup_env.sh
 #
 # Or with reservation (faster scheduling, uses points):
 #   qsub -ar 6925 -g tga-koike-shanda <path>/setup_env.sh
 
 set -euo pipefail
 
-TSUBAME_ROOT="${TSUBAME_ROOT:-/gs/fs/tga-koike-shanda/kuno}"
+TSUBAME_ROOT="${TSUBAME_ROOT:-/gs/fs/tga-koike-shanda2/sk}"
 REPO="$TSUBAME_ROOT/3d-distill"
 LOGDIR="$TSUBAME_ROOT/scratch/tsubame_logs"
 mkdir -p "$LOGDIR"

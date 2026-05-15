@@ -4,7 +4,7 @@
 #$ -l h_rt=24:00:00
 #$ -N m1pd-tsubame
 #$ -j y
-#$ -o /gs/fs/tga-koike-shanda/kuno/scratch/tsubame_logs/m1_pd.qsub.log
+#$ -o /gs/fs/tga-koike-shanda2/sk/scratch/tsubame_logs/m1_pd.qsub.log
 #
 # TSUBAME M1 PD (Progressive Distillation) training on H100 96GB node_f (4 GPU).
 #   - 3 stages [50->25, 25->12, 12->6], steps_per_stage=5000

@@ -4,7 +4,7 @@
 #$ -l h_rt=24:00:00
 #$ -N m1dmd2-tsubame
 #$ -j y
-#$ -o /gs/fs/tga-koike-shanda/kuno/scratch/tsubame_logs/m1_dmd2.qsub.log
+#$ -o /gs/fs/tga-koike-shanda2/sk/scratch/tsubame_logs/m1_dmd2.qsub.log
 #
 # TSUBAME M1 DMD2 (Distribution Matching Distillation + GAN) on H100 96GB node_f.
 #   - 4 GPU DDP, effective batch=16 (per-GPU 4)
