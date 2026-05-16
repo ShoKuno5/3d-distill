@@ -72,7 +72,7 @@ tsubame_make_run_config() {
     local OUTPUT_ROOT="$1"
     local RUN_CFG="$2"
     local EXTRA="${3:-}"
-    local SRC_CFG="$REPO/distill_methods/configs/config_525_hssd_tsubame.yaml"
+    local SRC_CFG="${SRC_CFG_PATH:-$REPO/distill_methods/configs/config_525_hssd_tsubame.yaml}"
     mkdir -p "$OUTPUT_ROOT"
     if [ -f "$RUN_CFG" ]; then
         echo "config exists: $RUN_CFG (reusing)"
@@ -87,4 +87,65 @@ $EXTRA
 yaml.safe_dump(cfg, open('$RUN_CFG', 'w'), default_flow_style=False, sort_keys=False)
 print('config:', '$RUN_CFG')
 PY
+}
+
+# --------------------------------------------------------------------
+# Multi-node DDP support (TSUBAME 4.0 + UGE openmpi PE).
+# --------------------------------------------------------------------
+#
+# Usage from a multi-node job script:
+#   #$ -l node_f=N -pe openmpi N
+#   source "$(dirname "$0")/_common.sh"
+#   tsubame_setup_env
+#   tsubame_setup_multinode_env       # populates NNODES / NODE_RANK / MASTER_ADDR / NCCL env
+#   mpirun -n "$NNODES" -ppn 1 -hostfile "$PE_HOSTFILE" \
+#     bash -c 'tsubame_torchrun_multinode train.py --config ...'
+#
+# Inside the mpirun-spawned bash, OMPI_COMM_WORLD_RANK is set per node,
+# so re-sourcing this and calling tsubame_setup_multinode_env gives the
+# right NODE_RANK on each node.
+
+tsubame_setup_multinode_env() {
+    # NCCL env tuning for TSUBAME 4.0 (Mellanox HDR200 InfiniBand).
+    # Values are safe defaults; override via env if the cluster reports
+    # different HCA / interface names. NCCL auto-detects mlx5 devices.
+    export NCCL_IB_HCA="${NCCL_IB_HCA:-mlx5}"
+    export NCCL_IB_GID_INDEX="${NCCL_IB_GID_INDEX:-3}"
+    export NCCL_SOCKET_IFNAME="${NCCL_SOCKET_IFNAME:-ib0}"
+    export NCCL_DEBUG="${NCCL_DEBUG:-WARN}"
+    # Async error handling helps surface NCCL hangs early.
+    export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
+    # Avoid IPv6 issues on some TSUBAME nodes.
+    export NCCL_IB_DISABLE="${NCCL_IB_DISABLE:-0}"
+
+    if [ -n "${PE_HOSTFILE:-}" ] && [ -f "$PE_HOSTFILE" ]; then
+        # UGE openmpi PE allocates N nodes; PE_HOSTFILE lists hostnames
+        # (one line per node, format: "hostname N hostgroup queue").
+        local NODES
+        NODES=$(awk '{print $1}' "$PE_HOSTFILE")
+        export NNODES=$(echo "$NODES" | wc -l)
+        export MASTER_ADDR=$(echo "$NODES" | head -1)
+        # mpirun -ppn 1 spawns one task per node; OMPI rank == node rank.
+        export NODE_RANK="${OMPI_COMM_WORLD_RANK:-${PMIX_RANK:-0}}"
+    else
+        # Single-node fallback (no UGE PE allocation).
+        export NNODES="${NNODES:-1}"
+        export NODE_RANK="${NODE_RANK:-0}"
+        export MASTER_ADDR="${MASTER_ADDR:-localhost}"
+    fi
+    export MASTER_PORT="${MASTER_PORT:-29500}"
+    export NPROC_PER_NODE=$(nvidia-smi -L | wc -l)
+
+    echo "[multinode] nodes=$NNODES rank=$NODE_RANK master=$MASTER_ADDR:$MASTER_PORT nproc_per_node=$NPROC_PER_NODE"
+}
+
+# Run torchrun in multi-node mode. Call after tsubame_setup_multinode_env.
+# All args are passed through to the entrypoint script.
+tsubame_torchrun_multinode() {
+    "$TORCHRUN" --nproc_per_node="$NPROC_PER_NODE" \
+                --nnodes="$NNODES" \
+                --node_rank="$NODE_RANK" \
+                --master_addr="$MASTER_ADDR" \
+                --master_port="$MASTER_PORT" \
+                "$@"
 }
