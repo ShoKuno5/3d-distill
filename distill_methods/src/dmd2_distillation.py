@@ -335,8 +335,9 @@ class DMD2Distillation(DMD1Distillation):
         # reduction in the prior iteration". Wrap the whole loop in no_sync()
         # so the reducer never activates; sub-iter grads are accumulated
         # locally and synced manually via _sync_grads inside _train_fake_score
-        # and _train_discriminator. Phase 3 below runs outside no_sync so
-        # the student update uses DDP's normal all-reduce path.
+        # and _train_discriminator. Phase 3 below ALSO uses no_sync + manual
+        # sync because the GAN feature extraction there swaps to fake_score
+        # mid-step, which provokes a separate DDP edge case (see Phase 3).
         no_sync = self.student.no_sync if self.is_distributed else nullcontext
         loss_fake = torch.tensor(0.0, device=self.device)
         loss_d = torch.tensor(0.0, device=self.device)
@@ -435,9 +436,20 @@ class DMD2Distillation(DMD1Distillation):
         # Clear fake_score grads to prevent stale GAN gradients from
         # leaking into the next TTUR fake_score update.
         self.optimizer_fake.zero_grad()
-        loss.backward()
+        # Phase 3 also runs in no_sync because the GAN-feat forward at line
+        # 388/406 activates the fake_score adapter while the distill forward
+        # at 341 uses the student adapter. find_unused_parameters=True plus
+        # this mid-step adapter swap surfaces a PyTorch DDP edge case where
+        # the reducer registers an autograd hook for a param whose grad
+        # ends up undefined, raising "Encountered gradient which is
+        # undefined, but still allreduced by DDP reducer". Skipping DDP's
+        # auto reduction and syncing student LoRA grads manually avoids it.
+        student_params = self.optimizer.param_groups[0]["params"]
+        with no_sync():
+            loss.backward()
+        self._sync_grads(student_params)
         torch.nn.utils.clip_grad_norm_(
-            [p for p in self.student.parameters() if p.requires_grad],
+            student_params,
             self.config["training"]["gradient_clip"],
         )
         self.optimizer.step()
