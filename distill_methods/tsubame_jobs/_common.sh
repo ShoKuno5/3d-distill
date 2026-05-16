@@ -106,6 +106,12 @@ PY
 # right NODE_RANK on each node.
 
 tsubame_setup_multinode_env() {
+    # OpenMPI is not in PATH by default on TSUBAME 4.0 compute nodes —
+    # the openmpi PE only handles slot allocation, not module loading.
+    # Load the default gcc-built openmpi (CUDA-aware not required since
+    # NCCL handles GPU comm directly).
+    module load openmpi/5.0.10-gcc 2>/dev/null || echo "[warn] openmpi module load failed"
+
     # NCCL env tuning for TSUBAME 4.0 (Mellanox HDR200 InfiniBand).
     # Values are safe defaults; override via env if the cluster reports
     # different HCA / interface names. NCCL auto-detects mlx5 devices.
