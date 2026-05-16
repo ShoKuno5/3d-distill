@@ -39,12 +39,18 @@ if [ -n "${PE_HOSTFILE:-}" ] && [ "$NNODES" -gt 1 ]; then
     OMPI_HOSTFILE=$(tsubame_make_ompi_hostfile)
     trap 'rm -f "$OMPI_HOSTFILE"' EXIT
     # --map-by ppr:1:node = one task per node
+    # bash -c (NOT -lc): -l re-sources /etc/profile and may unset
+    # OMPI_COMM_WORLD_RANK / PMIX_RANK that mpirun set per-task.
+    # -x forwards specific env vars explicitly (defensive).
     mpirun -n "$NNODES" --map-by ppr:1:node --hostfile "$OMPI_HOSTFILE" \
-        bash -lc "
+        -x PATH -x LD_LIBRARY_PATH \
+        bash -c "
+            echo \"[host \$(hostname)] BEFORE setup: OMPI_COMM_WORLD_RANK=\${OMPI_COMM_WORLD_RANK:-unset} PMIX_RANK=\${PMIX_RANK:-unset}\"
+            env | grep -E 'OMPI|PMIX|PMI_' | head -10
             source $REPO/distill_methods/tsubame_jobs/_common.sh
             tsubame_setup_env
             tsubame_setup_multinode_env
-            echo \"[host \$(hostname)] node_rank=\$NODE_RANK -> launching torchrun on \$NPROC_PER_NODE GPU\"
+            echo \"[host \$(hostname)] AFTER setup: node_rank=\$NODE_RANK -> launching torchrun on \$NPROC_PER_NODE GPU\"
             tsubame_torchrun_multinode \
                 $REPO/distill_methods/scripts/smoke_test_ddp_dmd2.py \
                 --config $REPO/distill_methods/configs/config_525_hssd_tsubame.yaml \
