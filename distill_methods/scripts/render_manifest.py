@@ -96,7 +96,15 @@ def main():
                         help="Per-mesh render timeout")
     parser.add_argument("--max-renders", type=int, default=None,
                         help="Stop after N renders (debug)")
+    parser.add_argument("--shard", type=int, default=0,
+                        help="Shard index for parallel rendering (default 0)")
+    parser.add_argument("--num-shards", type=int, default=1,
+                        help="Total parallel shards. Each shard renders rows "
+                             "whose deterministic index%%num_shards == shard.")
     args = parser.parse_args()
+    if not (0 <= args.shard < args.num_shards):
+        print(f"ERROR: --shard must be in [0, {args.num_shards})", file=sys.stderr)
+        sys.exit(2)
 
     blender = os.environ.get(BLENDER_BIN_ENV, BLENDER_BIN_DEFAULT)
     if not os.path.exists(blender):
@@ -120,6 +128,11 @@ def main():
         if len(missing) > 20:
             print(f"  ... and {len(missing) - 20} more")
         return
+
+    # Apply sharding deterministically by the missing-row index.
+    if args.num_shards > 1:
+        missing = [r for i, r in enumerate(missing) if i % args.num_shards == args.shard]
+        print(f"Shard {args.shard}/{args.num_shards}: {len(missing)} rows")
 
     to_render = missing if args.max_renders is None else missing[:args.max_renders]
     print(f"Rendering {len(to_render)} images @ {args.resolution}x{args.resolution} ...")
