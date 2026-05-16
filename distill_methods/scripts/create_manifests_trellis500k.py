@@ -226,6 +226,9 @@ def main():
                         help="Even-split mode only: total samples stratified evenly across datasets")
     parser.add_argument("--train-ratio", type=float, default=4.0,
                         help="train:test ratio (4.0 => 80/20)")
+    parser.add_argument("--train-only", action="store_true",
+                        help="Skip the train/test split, put every selected sample in train.csv. "
+                             "Use when eval is handled by a separate manifest (e.g. Toys4k holdout).")
     parser.add_argument("--min-aesthetic", type=float, default=4.0,
                         help="Drop anything with aesthetic_score below this")
     parser.add_argument("--seed", type=int, default=42)
@@ -255,13 +258,20 @@ def main():
 
     selected = sample_per_dataset(trellis_root, dataset_targets,
                                   toys4k_uids, args.min_aesthetic, args.seed)
-    train, test = train_test_split(selected, args.train_ratio, args.seed)
-    print(f"Split: {len(train)} train, {len(test)} test")
-    print()
-
     out_dir = DM_DIR / "manifests" / args.name
-    write_manifest(train, out_dir / "train.csv", trellis_root, sk5_data_root)
-    write_manifest(test,  out_dir / "test.csv",  trellis_root, sk5_data_root)
+    if args.train_only:
+        all_rows: list = []
+        for dataset_key, rows in sorted(selected.items()):
+            all_rows.extend((dataset_key, *r) for r in rows)
+        print(f"Train-only: {len(all_rows)} samples (no test split)")
+        print()
+        write_manifest(all_rows, out_dir / "train.csv", trellis_root, sk5_data_root)
+    else:
+        train, test = train_test_split(selected, args.train_ratio, args.seed)
+        print(f"Split: {len(train)} train, {len(test)} test")
+        print()
+        write_manifest(train, out_dir / "train.csv", trellis_root, sk5_data_root)
+        write_manifest(test,  out_dir / "test.csv",  trellis_root, sk5_data_root)
 
 
 if __name__ == "__main__":
