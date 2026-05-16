@@ -283,6 +283,12 @@ class BaseDistiller:
         self.is_distributed = dist.is_initialized()
         self.rank = dist.get_rank() if self.is_distributed else 0
         self.world_size = dist.get_world_size() if self.is_distributed else 1
+        # LOCAL_RANK is the GPU index on the *current node*. Use it for
+        # any GPU-index argument (DDP device_ids, cuda:<idx>, etc.).
+        # self.rank is the *global* rank across nodes; it's correct for
+        # all-reduce / logging but is out of range for cuda:* on
+        # multi-node setups where each node only exposes 4 GPUs.
+        self.local_rank = int(os.environ.get("LOCAL_RANK", str(self.rank)))
         self.is_main = self.rank == 0
 
         self.guidance_scale = train_cfg["cfg"]["guidance_scale"]
@@ -368,7 +374,7 @@ class BaseDistiller:
             ddp_find_unused = getattr(self, "_ddp_find_unused_parameters", False)
             self.student = DDP(
                 self.student,
-                device_ids=[self.rank],
+                device_ids=[self.local_rank],
                 find_unused_parameters=ddp_find_unused,
             )
 
@@ -666,7 +672,7 @@ class BaseDistiller:
             ddp_find_unused = getattr(self, "_ddp_find_unused_parameters", False)
             self.student = DDP(
                 self.student,
-                device_ids=[self.rank],
+                device_ids=[self.local_rank],
                 find_unused_parameters=ddp_find_unused,
             )
 
