@@ -126,25 +126,49 @@ def load_metadata(trellis_root: Path, dataset_key: str, toys4k_uids: set[str]):
             yield sha, row["file_identifier"], aes
 
 
-def sample_per_dataset(trellis_root: Path, dataset_keys: list[str], total_target: int,
+def sample_per_dataset(trellis_root: Path, dataset_targets: dict[str, int],
                        toys4k_uids: set[str], min_aesthetic: float, seed: int) -> dict[str, list]:
-    """Stratify total_target evenly across dataset_keys, top-aesthetic within each."""
+    """Pick `target` samples from each dataset (top-aesthetic + diversity).
+
+    Selection rule (per dataset): filter by `aesthetic_score >= min_aesthetic`,
+    sort high-to-low, take the top `2 * target` as a candidate pool, then
+    random-sample `target` from it. This gives quality bias + some diversity.
+    """
     rng = random.Random(seed)
-    per_ds_target = total_target // len(dataset_keys)
     selected = {}
-    for k in dataset_keys:
+    for k, target in dataset_targets.items():
         rows = [(sha, fid, aes) for sha, fid, aes in load_metadata(trellis_root, k, toys4k_uids)
                 if aes >= min_aesthetic]
         rows.sort(key=lambda r: -r[2])  # highest aesthetic first
-        if len(rows) <= per_ds_target:
+        if len(rows) <= target:
             picked = rows
         else:
-            # take top 2x by aesthetic, then random sample to target (diversity)
-            pool = rows[:per_ds_target * 2]
-            picked = rng.sample(pool, per_ds_target)
+            pool = rows[:target * 2]
+            picked = rng.sample(pool, target)
         selected[k] = picked
-        print(f"  {k}: {len(rows)} candidates >= aes {min_aesthetic}, picked {len(picked)}")
+        print(f"  {k}: {len(rows)} candidates >= aes {min_aesthetic}, target {target}, picked {len(picked)}")
     return selected
+
+
+def parse_dataset_counts(spec: str) -> dict[str, int]:
+    """Parse 'key=N,key=N,...' into {key: N}. Validates keys."""
+    out: dict[str, int] = {}
+    for token in spec.split(","):
+        token = token.strip()
+        if not token:
+            continue
+        if "=" not in token:
+            raise ValueError(f"Expected 'key=N', got: {token!r}")
+        k, v = token.split("=", 1)
+        k, v = k.strip(), int(v.strip())
+        if k not in DATASETS:
+            raise ValueError(f"Unknown dataset {k!r}; valid: {sorted(DATASETS.keys())}")
+        if v <= 0:
+            raise ValueError(f"Count for {k} must be positive, got {v}")
+        out[k] = v
+    if not out:
+        raise ValueError("No dataset counts parsed")
+    return out
 
 
 def train_test_split(selected: dict[str, list], train_ratio: float, seed: int):
@@ -191,11 +215,15 @@ def write_manifest(rows: list, path: Path, trellis_root: Path, sk5_data_root: Pa
 
 def main():
     parser = argparse.ArgumentParser(description="Create manifests from TRELLIS-500K (minus Toys4k)")
-    parser.add_argument("--datasets", nargs="+", required=True,
-                        choices=sorted(DATASETS.keys()),
-                        help="Which sub-datasets to draw from")
+    grp = parser.add_mutually_exclusive_group(required=True)
+    grp.add_argument("--datasets", nargs="+",
+                     choices=sorted(DATASETS.keys()),
+                     help="Even-split mode: draw equal counts from each listed dataset")
+    grp.add_argument("--per-dataset-counts",
+                     help="Per-dataset mode: explicit counts per dataset, e.g."
+                          " 'hssd=1500,abo=1500,objaverse_xl_sketchfab=2000'")
     parser.add_argument("--target-samples", type=int, default=525,
-                        help="Total samples (train + test combined), stratified evenly across datasets")
+                        help="Even-split mode only: total samples stratified evenly across datasets")
     parser.add_argument("--train-ratio", type=float, default=4.0,
                         help="train:test ratio (4.0 => 80/20)")
     parser.add_argument("--min-aesthetic", type=float, default=4.0,
@@ -209,16 +237,23 @@ def main():
     sk5_data_root = Path(os.environ.get(SK5_DATA_ENV, SK5_DATA_DEFAULT))
     assert trellis_root.exists(), f"TRELLIS500K root not found: {trellis_root}"
 
+    if args.per_dataset_counts:
+        dataset_targets = parse_dataset_counts(args.per_dataset_counts)
+    else:
+        per_ds = args.target_samples // len(args.datasets)
+        dataset_targets = {k: per_ds for k in args.datasets}
+
     toys4k_uids, _ = load_toys4k_refs()
+    total_target = sum(dataset_targets.values())
     print(f"Loaded Toys4k guard: {len(toys4k_uids)} sha256")
     print(f"TRELLIS500K root:   {trellis_root}")
     print(f"Derived assets root: {sk5_data_root}")
-    print(f"Datasets:           {args.datasets}")
-    print(f"Target:             {args.target_samples} samples, train:test = {args.train_ratio}:1")
+    print(f"Per-dataset targets: {dataset_targets}  (total {total_target})")
+    print(f"Train:test ratio:   {args.train_ratio}:1")
     print(f"Aesthetic floor:    {args.min_aesthetic}")
     print()
 
-    selected = sample_per_dataset(trellis_root, args.datasets, args.target_samples,
+    selected = sample_per_dataset(trellis_root, dataset_targets,
                                   toys4k_uids, args.min_aesthetic, args.seed)
     train, test = train_test_split(selected, args.train_ratio, args.seed)
     print(f"Split: {len(train)} train, {len(test)} test")
