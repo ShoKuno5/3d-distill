@@ -113,11 +113,13 @@ tsubame_setup_multinode_env() {
     module load openmpi/5.0.10-gcc 2>/dev/null || echo "[warn] openmpi module load failed"
 
     # NCCL env tuning for TSUBAME 4.0 (Mellanox HDR200 InfiniBand).
-    # Values are safe defaults; override via env if the cluster reports
-    # different HCA / interface names. NCCL auto-detects mlx5 devices.
+    # TSUBAME compute nodes expose four IPoIB interfaces: ibs1..ibs4
+    # (NOT the ib0 name common on other clusters) plus a bond0
+    # ethernet for management. NCCL bootstrap needs a socket interface
+    # before it can use IB for collectives.
     export NCCL_IB_HCA="${NCCL_IB_HCA:-mlx5}"
     export NCCL_IB_GID_INDEX="${NCCL_IB_GID_INDEX:-3}"
-    export NCCL_SOCKET_IFNAME="${NCCL_SOCKET_IFNAME:-ib0}"
+    export NCCL_SOCKET_IFNAME="${NCCL_SOCKET_IFNAME:-ibs1,ibs2,ibs3,ibs4}"
     export NCCL_DEBUG="${NCCL_DEBUG:-WARN}"
     # Async error handling helps surface NCCL hangs early.
     export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
