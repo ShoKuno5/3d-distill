@@ -348,6 +348,21 @@ class DMD2Distillation(DMD1Distillation):
                     loss_d = self._train_discriminator(batch)
 
         # --- Phase 3: Update student (KL + GAN) ---
+        # Wrap the whole phase in no_sync. DDP arms the reducer inside
+        # _post_forward (during forward, not backward), so to bypass
+        # DDP's auto reduction the FORWARDS must run inside no_sync —
+        # wrapping only loss.backward() is too late. Phase 3 also has a
+        # mid-phase adapter swap (student -> fake_score for GAN feature
+        # extraction at line 407, then back), which together with
+        # find_unused_parameters=True provokes "Encountered gradient
+        # which is undefined, but still allreduced by DDP reducer".
+        # Student LoRA grads are all-reduced manually after backward.
+        # Manual __enter__/__exit__ avoids re-indenting ~80 lines of
+        # phase logic. On an unhandled exception in Phase 3 the process
+        # dies anyway, so we accept that no_sync state may leak in that
+        # rare path.
+        phase3_ctx = no_sync()
+        phase3_ctx.__enter__()
         x_data = batch["latent"]
         image_cond = batch["image_cond"]
         B = x_data.shape[0]
@@ -436,17 +451,10 @@ class DMD2Distillation(DMD1Distillation):
         # Clear fake_score grads to prevent stale GAN gradients from
         # leaking into the next TTUR fake_score update.
         self.optimizer_fake.zero_grad()
-        # Phase 3 also runs in no_sync because the GAN-feat forward at line
-        # 388/406 activates the fake_score adapter while the distill forward
-        # at 341 uses the student adapter. find_unused_parameters=True plus
-        # this mid-step adapter swap surfaces a PyTorch DDP edge case where
-        # the reducer registers an autograd hook for a param whose grad
-        # ends up undefined, raising "Encountered gradient which is
-        # undefined, but still allreduced by DDP reducer". Skipping DDP's
-        # auto reduction and syncing student LoRA grads manually avoids it.
         student_params = self.optimizer.param_groups[0]["params"]
-        with no_sync():
-            loss.backward()
+        loss.backward()
+        # Close the Phase 3 no_sync that was opened before the first forward.
+        phase3_ctx.__exit__(None, None, None)
         self._sync_grads(student_params)
         torch.nn.utils.clip_grad_norm_(
             student_params,
