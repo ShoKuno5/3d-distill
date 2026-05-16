@@ -46,7 +46,11 @@ logging.basicConfig(
 dist.init_process_group(backend="nccl")
 rank = dist.get_rank()
 world_size = dist.get_world_size()
-torch.cuda.set_device(rank)
+# In multi-node DDP, dist.get_rank() is the *global* rank but each node
+# only exposes its local GPUs (cuda:0..N-1). Use LOCAL_RANK from torchrun.
+local_rank = int(os.environ.get("LOCAL_RANK", str(rank)))
+torch.cuda.set_device(local_rank)
+device = torch.device(f"cuda:{local_rank}")
 logger = logging.getLogger(str(rank))
 
 os.environ["WANDB_MODE"] = "disabled"
@@ -58,14 +62,14 @@ def discriminator_flat(distiller) -> torch.Tensor:
     """Concat all discriminator params into a deterministic 1D fp32 tensor."""
     items = sorted(distiller.discriminator.named_parameters(), key=lambda x: x[0])
     if not items:
-        return torch.zeros(1, device=f"cuda:{rank}")
+        return torch.zeros(1, device=device)
     return torch.cat([p.data.float().flatten() for _, p in items])
 
 
 def replay_indices_sample(distiller, batch_size: int) -> torch.Tensor:
     """Reproduce ReplayBuffer.sample's torch.randint call (no seed)."""
     n = len(distiller.replay_buffer.buffer)
-    return torch.randint(0, n, (batch_size,), device=f"cuda:{rank}")
+    return torch.randint(0, n, (batch_size,), device=device)
 
 
 def main():
