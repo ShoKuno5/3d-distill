@@ -35,7 +35,8 @@ echo "NNODES=$NNODES MASTER_ADDR=$MASTER_ADDR MASTER_PORT=$MASTER_PORT"
 echo "================================================================"
 
 if [ -n "${PE_HOSTFILE:-}" ] && [ "$NNODES" -gt 1 ]; then
-    mpirun -n "$NNODES" -ppn 1 -hostfile "$PE_HOSTFILE" \
+    # OpenMPI 5: --map-by ppr:1:node = one task per node
+    mpirun -n "$NNODES" --map-by ppr:1:node --hostfile "$PE_HOSTFILE" \
         bash -lc "
             source $REPO/distill_methods/tsubame_jobs/_common.sh
             tsubame_setup_env

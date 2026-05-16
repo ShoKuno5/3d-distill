@@ -48,7 +48,8 @@ tsubame_make_run_config "$OUTPUT_ROOT" "$RUN_CFG"
 if [ -n "${PE_HOSTFILE:-}" ] && [ "$NNODES" -gt 1 ]; then
     # Multi-node path: mpirun is the outer launcher, this script is the
     # per-node entrypoint. Each node runs torchrun for its 4 local GPUs.
-    mpirun -n "$NNODES" -ppn 1 -hostfile "$PE_HOSTFILE" \
+    # OpenMPI 5: --map-by ppr:1:node = one task per node
+    mpirun -n "$NNODES" --map-by ppr:1:node --hostfile "$PE_HOSTFILE" \
         bash -lc "
             source $REPO/distill_methods/tsubame_jobs/_common.sh
             tsubame_setup_env
