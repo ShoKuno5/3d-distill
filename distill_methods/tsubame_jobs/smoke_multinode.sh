@@ -35,8 +35,11 @@ echo "NNODES=$NNODES MASTER_ADDR=$MASTER_ADDR MASTER_PORT=$MASTER_PORT"
 echo "================================================================"
 
 if [ -n "${PE_HOSTFILE:-}" ] && [ "$NNODES" -gt 1 ]; then
-    # OpenMPI 5: --map-by ppr:1:node = one task per node
-    mpirun -n "$NNODES" --map-by ppr:1:node --hostfile "$PE_HOSTFILE" \
+    # OpenMPI 5 PRTE can't parse UGE's 4-column PE_HOSTFILE; convert.
+    OMPI_HOSTFILE=$(tsubame_make_ompi_hostfile)
+    trap 'rm -f "$OMPI_HOSTFILE"' EXIT
+    # --map-by ppr:1:node = one task per node
+    mpirun -n "$NNODES" --map-by ppr:1:node --hostfile "$OMPI_HOSTFILE" \
         bash -lc "
             source $REPO/distill_methods/tsubame_jobs/_common.sh
             tsubame_setup_env

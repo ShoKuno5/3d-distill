@@ -46,10 +46,13 @@ tsubame_make_run_config "$OUTPUT_ROOT" "$RUN_CFG"
 # OMPI_COMM_WORLD_RANK so tsubame_setup_multinode_env above already set
 # NODE_RANK correctly on each node.
 if [ -n "${PE_HOSTFILE:-}" ] && [ "$NNODES" -gt 1 ]; then
+    # OpenMPI 5 PRTE can't parse UGE's 4-column PE_HOSTFILE; convert.
+    OMPI_HOSTFILE=$(tsubame_make_ompi_hostfile)
+    trap 'rm -f "$OMPI_HOSTFILE"' EXIT
     # Multi-node path: mpirun is the outer launcher, this script is the
     # per-node entrypoint. Each node runs torchrun for its 4 local GPUs.
     # OpenMPI 5: --map-by ppr:1:node = one task per node
-    mpirun -n "$NNODES" --map-by ppr:1:node --hostfile "$PE_HOSTFILE" \
+    mpirun -n "$NNODES" --map-by ppr:1:node --hostfile "$OMPI_HOSTFILE" \
         bash -lc "
             source $REPO/distill_methods/tsubame_jobs/_common.sh
             tsubame_setup_env

@@ -155,3 +155,13 @@ tsubame_torchrun_multinode() {
                 --master_port="$MASTER_PORT" \
                 "$@"
 }
+
+# Convert UGE's PE_HOSTFILE (4-column: hostname slots queue range) to the
+# OpenMPI hostfile format (hostname slots=N). PRTE in OpenMPI 5 cannot
+# parse the UGE format directly. Echoes the path of the temp file.
+tsubame_make_ompi_hostfile() {
+    local OMPI_HF
+    OMPI_HF=$(mktemp -t ompi_hostfile.XXXXXX)
+    awk '{print $1" slots=1"}' "$PE_HOSTFILE" > "$OMPI_HF"
+    echo "$OMPI_HF"
+}
