@@ -50,13 +50,18 @@ def _load_pipeline(pretrained_path: str):
 
 
 def _enable_gradient_checkpointing(peft_model):
-    """Monkey-patch Hunyuan3DDiT.forward to wrap the transformer block
-    loops in torch.utils.checkpoint.
+    """Monkey-patch the inner denoiser's forward to wrap its transformer
+    block loop in torch.utils.checkpoint.
 
-    Two checkpoint regions per forward (one for double_blocks, one for
-    single_blocks). Activations between blocks are recomputed during
-    backward instead of stored. Memory drops roughly 5-10x at the cost
-    of ~25-35% extra wallclock per training step.
+    Supports both denoiser architectures shipped with Hunyuan3D-2.1:
+      - HunYuanDiTPlain (Hunyuan3D-2.1 production): single
+        ``self.blocks`` ModuleList with U-Net-style skip connections.
+      - Hunyuan3DDiT (Flux-style alt): split into ``double_blocks`` +
+        ``single_blocks``.
+
+    Activations between blocks are recomputed during backward instead of
+    stored. Memory drops roughly 5-10x at the cost of ~25-35% extra
+    wallclock per training step.
 
     Adapter-aware: captures the active peft adapter at forward time and
     restores it during checkpoint recomputation. This matters for DMD
@@ -78,6 +83,124 @@ def _enable_gradient_checkpointing(peft_model):
         logger.info("Gradient checkpointing already enabled on student DiT")
         return
 
+    arch_name = type(inner).__name__
+    if hasattr(inner, "blocks") and not hasattr(inner, "double_blocks"):
+        _patch_hunyuan_dit_plain(inner, peft_model, checkpoint)
+        inner._gc_enabled = True
+        logger.info(
+            "Gradient checkpointing enabled on %s (%d blocks, skip-connection)",
+            arch_name,
+            len(inner.blocks),
+        )
+    elif hasattr(inner, "double_blocks") and hasattr(inner, "single_blocks"):
+        _patch_hunyuan_3d_dit_flux(inner, peft_model, checkpoint)
+        inner._gc_enabled = True
+        logger.info(
+            "Gradient checkpointing enabled on %s (%d double + %d single blocks)",
+            arch_name,
+            len(inner.double_blocks),
+            len(inner.single_blocks),
+        )
+    else:
+        logger.warning(
+            "Gradient checkpointing: unrecognized DiT architecture %s — "
+            "expected attribute `blocks` or `double_blocks/single_blocks`. "
+            "Skipping (will use full activation memory).",
+            arch_name,
+        )
+
+
+def _make_adapter_restore_wrapper(peft_model):
+    """Return (capture_adapter, restore_in_run) helpers shared by the
+    arch-specific patches. Captures the active adapter at the moment of
+    call and produces a context manager that restores it during
+    checkpoint recomputation only if the current adapter differs.
+    """
+    captured = peft_model.active_adapter
+    if isinstance(captured, list):
+        captured = list(captured)
+
+    class _AdapterRestore:
+        def __enter__(self):
+            self._current = peft_model.active_adapter
+            self._need = self._current != captured
+            if self._need:
+                peft_model.set_adapter(captured)
+            return self
+
+        def __exit__(self, exc_type, exc_val, exc_tb):
+            if self._need:
+                peft_model.set_adapter(self._current)
+            return False
+
+    return _AdapterRestore
+
+
+def _patch_hunyuan_dit_plain(inner, peft_model, checkpoint):
+    """HunYuanDiTPlain has 24 ``self.blocks`` connected with U-Net-style
+    skip connections (first half saves outputs, second half pops them).
+    Wrap the whole loop in one checkpoint region; the skip_value_list is
+    rebuilt internally during recomputation."""
+    import types
+
+    def gc_forward(self, x, t, contexts, **kwargs):
+        cond = contexts["main"]
+        t_emb = self.t_embedder(t, condition=kwargs.get("guidance_cond"))
+        x = self.x_embedder(x)
+        if self.use_pos_emb:
+            pos_embed = self.pos_embed.to(x.dtype)
+            x = x + pos_embed
+        if self.use_attention_pooling:
+            extra_vec = self.pooler(cond, None)
+            c = t_emb + self.extra_embedder(extra_vec)
+        else:
+            c = t_emb
+        if self.with_decoupled_ca:
+            additional_cond = self.additional_cond_proj(contexts["additional"])
+            cond = torch.cat([cond, additional_cond], dim=1)
+        x = torch.cat([c, x], dim=1)
+
+        use_ckpt = self.training and torch.is_grad_enabled()
+        if use_ckpt:
+            Restore = _make_adapter_restore_wrapper(peft_model)
+
+            def run_blocks(x, c, cond):
+                with Restore():
+                    skip_value_list = []
+                    for layer, block in enumerate(self.blocks):
+                        skip_value = (
+                            None
+                            if layer <= self.depth // 2
+                            else skip_value_list.pop()
+                        )
+                        x = block(x, c, cond, skip_value=skip_value)
+                        if layer < self.depth // 2:
+                            skip_value_list.append(x)
+                    return x
+
+            x = checkpoint(run_blocks, x, c, cond, use_reentrant=False)
+        else:
+            skip_value_list = []
+            for layer, block in enumerate(self.blocks):
+                skip_value = (
+                    None
+                    if layer <= self.depth // 2
+                    else skip_value_list.pop()
+                )
+                x = block(x, c, cond, skip_value=skip_value)
+                if layer < self.depth // 2:
+                    skip_value_list.append(x)
+
+        x = self.final_layer(x)
+        return x
+
+    inner.forward = types.MethodType(gc_forward, inner)
+
+
+def _patch_hunyuan_3d_dit_flux(inner, peft_model, checkpoint):
+    """Hunyuan3DDiT (Flux-style) has separate ``double_blocks`` and
+    ``single_blocks`` lists. One checkpoint region per list."""
+    import types
     from hy3dshape.models.denoisers.hunyuan3ddit import timestep_embedding
 
     def gc_forward(self, x, t, contexts, **kwargs):
@@ -100,35 +223,21 @@ def _enable_gradient_checkpointing(peft_model):
 
         use_ckpt = self.training and torch.is_grad_enabled()
         if use_ckpt:
-            captured_adapter = peft_model.active_adapter
-            if isinstance(captured_adapter, list):
-                captured_adapter = list(captured_adapter)
+            Restore = _make_adapter_restore_wrapper(peft_model)
 
             def run_double(latent, cond, vec):
-                current = peft_model.active_adapter
-                need_restore = current != captured_adapter
-                if need_restore:
-                    peft_model.set_adapter(captured_adapter)
-                try:
+                with Restore():
                     for block in self.double_blocks:
-                        latent, cond = block(img=latent, txt=cond, vec=vec, pe=None)
+                        latent, cond = block(
+                            img=latent, txt=cond, vec=vec, pe=None
+                        )
                     return latent, cond
-                finally:
-                    if need_restore:
-                        peft_model.set_adapter(current)
 
             def run_single(latent, vec):
-                current = peft_model.active_adapter
-                need_restore = current != captured_adapter
-                if need_restore:
-                    peft_model.set_adapter(captured_adapter)
-                try:
+                with Restore():
                     for block in self.single_blocks:
                         latent = block(latent, vec=vec, pe=None)
                     return latent
-                finally:
-                    if need_restore:
-                        peft_model.set_adapter(current)
 
             latent, cond = checkpoint(
                 run_double, latent, cond, vec, use_reentrant=False
@@ -147,13 +256,6 @@ def _enable_gradient_checkpointing(peft_model):
         return latent
 
     inner.forward = types.MethodType(gc_forward, inner)
-    inner._gc_enabled = True
-    logger.info(
-        "Gradient checkpointing: enabled on %s (%d double + %d single blocks)",
-        type(inner).__name__,
-        len(inner.double_blocks),
-        len(inner.single_blocks),
-    )
 
 
 def _load_ema(model: nn.Module, decay: float = 0.999, use_num_updates: bool = True):
