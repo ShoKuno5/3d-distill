@@ -117,6 +117,14 @@ class DMD1Distillation(BaseDistiller):
     # to any given backward pass; DDP needs the permissive flag.
     _ddp_find_unused_parameters = True
 
+    # Phase 3 in DMD2 keeps multiple Hunyuan3DDiT forwards alive before
+    # backward (x_gen with student adapter + GAN-feat with fake_score),
+    # which makes activation memory the dominant cost. Block-loop
+    # gradient checkpointing brings batch=4 within the 96 GB H100 budget.
+    # DMD1 inherits but typically has only one forward+backward per step,
+    # so the wallclock cost is modest there.
+    _use_gradient_checkpointing = True
+
     def __init__(self, config):
         super().__init__(config)
 

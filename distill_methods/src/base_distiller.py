@@ -49,6 +49,113 @@ def _load_pipeline(pretrained_path: str):
     return pipeline.model, pipeline
 
 
+def _enable_gradient_checkpointing(peft_model):
+    """Monkey-patch Hunyuan3DDiT.forward to wrap the transformer block
+    loops in torch.utils.checkpoint.
+
+    Two checkpoint regions per forward (one for double_blocks, one for
+    single_blocks). Activations between blocks are recomputed during
+    backward instead of stored. Memory drops roughly 5-10x at the cost
+    of ~25-35% extra wallclock per training step.
+
+    Adapter-aware: captures the active peft adapter at forward time and
+    restores it during checkpoint recomputation. This matters for DMD
+    methods that switch adapters between forward and backward — without
+    this, recomputation would use the *current* adapter and produce
+    gradients for the wrong LoRA matrices.
+
+    Vendored model code at models/hunyuan3d21/hy3dshape/... is not in
+    git (.gitignored), so this is a monkey-patch from the distillation
+    side rather than a source edit.
+    """
+    import types
+    from torch.utils.checkpoint import checkpoint
+
+    inner = getattr(peft_model, "base_model", peft_model)
+    inner = getattr(inner, "model", inner)
+
+    if getattr(inner, "_gc_enabled", False):
+        logger.info("Gradient checkpointing already enabled on student DiT")
+        return
+
+    from hy3dshape.models.denoisers.hunyuan3ddit import timestep_embedding
+
+    def gc_forward(self, x, t, contexts, **kwargs):
+        cond = contexts["main"]
+        latent = self.latent_in(x)
+        vec = self.time_in(
+            timestep_embedding(t, 256, self.time_factor).to(dtype=latent.dtype)
+        )
+        if self.guidance_embed:
+            guidance = kwargs.get("guidance", None)
+            if guidance is None:
+                raise ValueError(
+                    "Didn't get guidance strength for guidance distilled model."
+                )
+            vec = vec + self.guidance_in(
+                timestep_embedding(guidance, 256, self.time_factor)
+            )
+        cond = self.cond_in(cond)
+        pe = None
+
+        use_ckpt = self.training and torch.is_grad_enabled()
+        if use_ckpt:
+            captured_adapter = peft_model.active_adapter
+            if isinstance(captured_adapter, list):
+                captured_adapter = list(captured_adapter)
+
+            def run_double(latent, cond, vec):
+                current = peft_model.active_adapter
+                need_restore = current != captured_adapter
+                if need_restore:
+                    peft_model.set_adapter(captured_adapter)
+                try:
+                    for block in self.double_blocks:
+                        latent, cond = block(img=latent, txt=cond, vec=vec, pe=None)
+                    return latent, cond
+                finally:
+                    if need_restore:
+                        peft_model.set_adapter(current)
+
+            def run_single(latent, vec):
+                current = peft_model.active_adapter
+                need_restore = current != captured_adapter
+                if need_restore:
+                    peft_model.set_adapter(captured_adapter)
+                try:
+                    for block in self.single_blocks:
+                        latent = block(latent, vec=vec, pe=None)
+                    return latent
+                finally:
+                    if need_restore:
+                        peft_model.set_adapter(current)
+
+            latent, cond = checkpoint(
+                run_double, latent, cond, vec, use_reentrant=False
+            )
+            latent = torch.cat((cond, latent), 1)
+            latent = checkpoint(run_single, latent, vec, use_reentrant=False)
+        else:
+            for block in self.double_blocks:
+                latent, cond = block(img=latent, txt=cond, vec=vec, pe=pe)
+            latent = torch.cat((cond, latent), 1)
+            for block in self.single_blocks:
+                latent = block(latent, vec=vec, pe=pe)
+
+        latent = latent[:, cond.shape[1]:, ...]
+        latent = self.final_layer(latent, vec)
+        return latent
+
+    inner.forward = types.MethodType(gc_forward, inner)
+    inner._gc_enabled = True
+    logger.info(
+        "Gradient checkpointing: enabled on %s (%d double + %d single blocks)",
+        type(inner).__name__,
+        len(inner.double_blocks),
+        len(inner.single_blocks),
+    )
+
+
 def _load_ema(model: nn.Module, decay: float = 0.999, use_num_updates: bool = True):
     """Load LitEma from Hunyuan3D-2.1 codebase."""
     from hy3dshape.utils.ema import LitEma
@@ -138,6 +245,19 @@ class BaseDistiller:
         # Subclasses register extra PEFT adapters (e.g. fake_score) before
         # DDP wrap so their params are included in DDP's gradient buckets.
         self._add_extra_adapters()
+
+        # --- Optional: gradient checkpointing on the inner DiT ---
+        # Enabled when the subclass sets _use_gradient_checkpointing=True
+        # (DMD1/DMD2 do, to make batch=4 fit on H100 96GB) or the config
+        # flips training.gradient_checkpointing. Must happen after peft
+        # adapters are added and before DDP wrap, so DDP records hooks
+        # against the patched forward.
+        gc_enabled = (
+            getattr(self, "_use_gradient_checkpointing", False)
+            or config.get("training", {}).get("gradient_checkpointing", False)
+        )
+        if gc_enabled:
+            _enable_gradient_checkpointing(self.student)
 
         # --- DDP ---
         if self.is_distributed:
