@@ -44,6 +44,7 @@ if [ -n "${PE_HOSTFILE:-}" ] && [ "$NNODES" -gt 1 ]; then
     # -x forwards specific env vars explicitly (defensive).
     mpirun -n "$NNODES" --map-by ppr:1:node --hostfile "$OMPI_HOSTFILE" \
         -x PATH -x LD_LIBRARY_PATH \
+        -x MASTER_ADDR -x MASTER_PORT \
         bash -c "
             echo \"[host \$(hostname)] BEFORE setup: OMPI_COMM_WORLD_RANK=\${OMPI_COMM_WORLD_RANK:-unset} PMIX_RANK=\${PMIX_RANK:-unset}\"
             env | grep -E 'OMPI|PMIX|PMI_' | head -10

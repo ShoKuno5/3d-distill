@@ -124,17 +124,32 @@ tsubame_setup_multinode_env() {
     # Avoid IPv6 issues on some TSUBAME nodes.
     export NCCL_IB_DISABLE="${NCCL_IB_DISABLE:-0}"
 
-    if [ -n "${PE_HOSTFILE:-}" ] && [ -f "$PE_HOSTFILE" ]; then
-        # UGE openmpi PE allocates N nodes; PE_HOSTFILE lists hostnames
-        # (one line per node, format: "hostname N hostgroup queue").
+    # Three contexts to handle (in priority order):
+    # 1. Inside an mpirun-spawned process: OMPI_COMM_WORLD_RANK is set
+    #    per-task by OpenMPI. PE_HOSTFILE may or may not have been
+    #    forwarded by mpirun, so don't gate on it. NNODES = world size.
+    # 2. Outer UGE script with PE allocation but before mpirun: parse
+    #    PE_HOSTFILE for node count, take rank 0.
+    # 3. Neither: single-node fallback.
+    if [ -n "${OMPI_COMM_WORLD_RANK:-}" ]; then
+        export NODE_RANK="$OMPI_COMM_WORLD_RANK"
+        export NNODES="${OMPI_COMM_WORLD_SIZE:-1}"
+        # MASTER_ADDR / PORT must be forwarded from the outer script via
+        # `mpirun -x MASTER_ADDR -x MASTER_PORT`. Otherwise fall back to
+        # parsing PE_HOSTFILE (only useful on PE-aware setups) or
+        # localhost (single-node).
+        if [ -z "${MASTER_ADDR:-}" ] && [ -n "${PE_HOSTFILE:-}" ] && [ -f "$PE_HOSTFILE" ]; then
+            export MASTER_ADDR=$(awk 'NR==1 {print $1}' "$PE_HOSTFILE")
+        fi
+        export MASTER_ADDR="${MASTER_ADDR:-localhost}"
+    elif [ -n "${PE_HOSTFILE:-}" ] && [ -f "$PE_HOSTFILE" ]; then
+        # Outer UGE script (before mpirun), PE allocated.
         local NODES
         NODES=$(awk '{print $1}' "$PE_HOSTFILE")
         export NNODES=$(echo "$NODES" | wc -l)
         export MASTER_ADDR=$(echo "$NODES" | head -1)
-        # mpirun -ppn 1 spawns one task per node; OMPI rank == node rank.
-        export NODE_RANK="${OMPI_COMM_WORLD_RANK:-${PMIX_RANK:-0}}"
+        export NODE_RANK="0"
     else
-        # Single-node fallback (no UGE PE allocation).
         export NNODES="${NNODES:-1}"
         export NODE_RANK="${NODE_RANK:-0}"
         export MASTER_ADDR="${MASTER_ADDR:-localhost}"

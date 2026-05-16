@@ -53,7 +53,9 @@ if [ -n "${PE_HOSTFILE:-}" ] && [ "$NNODES" -gt 1 ]; then
     # per-node entrypoint. Each node runs torchrun for its 4 local GPUs.
     # OpenMPI 5: --map-by ppr:1:node = one task per node
     mpirun -n "$NNODES" --map-by ppr:1:node --hostfile "$OMPI_HOSTFILE" \
-        bash -lc "
+        -x PATH -x LD_LIBRARY_PATH \
+        -x MASTER_ADDR -x MASTER_PORT \
+        bash -c "
             source $REPO/distill_methods/tsubame_jobs/_common.sh
             tsubame_setup_env
             tsubame_setup_multinode_env
