@@ -1,0 +1,119 @@
+dataset:
+  name: trellis500k_balanced_5k
+  root: /gs/fs/tga-koike-shanda2/sk/data/trellis500k
+  manifest: /gs/fs/tga-koike-shanda2/sk/3d-distill/distill_methods/manifests/5k_balanced/train.csv
+  test_manifest: /gs/fs/tga-koike-shanda2/sk/3d-distill/distill_methods/manifests/toys4k_eval_1000/test.csv
+  max_samples: null
+  sample_ids_file: null
+  category_filter: null
+training:
+  training_data_dir: /gs/fs/tga-koike-shanda2/sk/data/5k_balanced/training_data
+  batch_size: 4
+  num_workers: 4
+  seed: 42
+  bf16: true
+  gradient_clip: 1.0
+  log_interval: 50
+  save_interval: 1000
+  total_steps: 15000
+  optimizer:
+    type: AdamW
+    lr: 1.0e-05
+    weight_decay: 0.01
+  model:
+    pretrained: tencent/Hunyuan3D-2.1
+    z_scale_factor: 1.0
+    lora:
+      rank: 64
+      alpha: 64
+      target_modules:
+      - to_q
+      - to_k
+      - to_v
+      - to_out.0
+    ema:
+      decay: 0.999
+      use_num_updates: true
+  methods:
+    pd:
+      stages:
+      - - 50
+        - 25
+      - - 25
+        - 12
+      - - 12
+        - 6
+      steps_per_stage: 5000
+    cd:
+      num_timesteps: 50
+    dmd1:
+      lambda_reg: 1.0
+      pairs_dir: /gs/fs/tga-koike-shanda2/sk/data/5k_balanced/dmd1_pairs
+      num_pairs: 20000
+    dmd2:
+      lr_d: 5.0e-05
+      lambda_gan: 0.1
+      d_update_ratio: 5
+      replay_buffer_size: 1024
+      replay_warmup: 128
+    sid:
+      lsg_teacher_scale: 11.25
+      lsg_fake_scale: 0.0
+      grad_norm_type: adaptive
+  cfg:
+    guidance_scale: 7.5
+output_root: /gs/fs/tga-koike-shanda2/sk/scratch/distill_methods/5k_m2
+models:
+- name: teacher_50step
+  version: '2.1'
+  description: Hunyuan3D-2.1 teacher (50-step)
+  mesh_filename: mesh_raw.obj
+  inference_params:
+    num_inference_steps: 50
+    guidance_scale: 7.5
+- name: pd_6step
+  method: pd
+  description: Progressive Distillation (6-step)
+  mesh_filename: mesh_raw.obj
+  inference_params:
+    num_inference_steps: 6
+    guidance_scale: 1.0
+- name: cd_4step
+  method: cd
+  description: Consistency Distillation (4-step)
+  mesh_filename: mesh_raw.obj
+  inference_params:
+    num_inference_steps: 4
+    guidance_scale: 1.0
+- name: dmd1_1step
+  method: dmd1
+  description: DMD1 (1-step)
+  mesh_filename: mesh_raw.obj
+  inference_params:
+    num_inference_steps: 1
+    guidance_scale: 1.0
+- name: dmd2_1step
+  method: dmd2
+  description: DMD2 (1-step)
+  mesh_filename: mesh_raw.obj
+  inference_params:
+    num_inference_steps: 1
+    guidance_scale: 1.0
+- name: trellis2
+  description: TRELLIS-2 (microsoft/TRELLIS.2-4B, official)
+  mesh_filename: mesh.obj
+  inference_params:
+    pipeline_type: 1024_cascade
+- name: flashvdm
+  description: FlashVDM (tencent/Hunyuan3D-2 turbo + flash decoder, official)
+  mesh_filename: mesh.obj
+  inference_params:
+    num_inference_steps: 5
+- name: mdt_dist
+  description: MDT-dist (microsoft/TRELLIS-image-large + MDT 2-step, official)
+  mesh_filename: mesh.obj
+  inference_params:
+    ss_steps: 2
+    slat_steps: 2
+normalization:
+  gt_method: unit_sphere
