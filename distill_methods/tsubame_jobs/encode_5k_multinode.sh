@@ -23,7 +23,7 @@ tsubame_log_init "encode_5k_multinode"
 tsubame_setup_env
 tsubame_setup_multinode_env
 
-CFG="$REPO/distill_methods/configs/config_5k_m2_tsubame.yaml"
+export CFG="$REPO/distill_methods/configs/config_5k_m2_tsubame.yaml"
 cd "$REPO/models/hunyuan3d21/hy3dshape"
 echo "================================================================"
 echo "Encode 5K multinode: $(date -Iseconds)"

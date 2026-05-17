@@ -19,11 +19,12 @@
 
 set -euo pipefail
 
-TSUBAME_ROOT="${TSUBAME_ROOT:-/gs/fs/tga-koike-shanda2/sk}"
-REPO="$TSUBAME_ROOT/3d-distill"
-VENV="$REPO/.venv"
-PY="$VENV/bin/python"
-TORCHRUN="$VENV/bin/torchrun"
+# Exported so mpirun -x can forward them to per-node bash children.
+export TSUBAME_ROOT="${TSUBAME_ROOT:-/gs/fs/tga-koike-shanda2/sk}"
+export REPO="$TSUBAME_ROOT/3d-distill"
+export VENV="$REPO/.venv"
+export PY="$VENV/bin/python"
+export TORCHRUN="$VENV/bin/torchrun"
 
 tsubame_setup_env() {
     module purge 2>/dev/null || true

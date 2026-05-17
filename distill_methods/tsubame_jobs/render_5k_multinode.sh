@@ -24,7 +24,7 @@ tsubame_setup_env
 tsubame_setup_multinode_env
 
 export BLENDER_BIN="$TSUBAME_ROOT/blender-3.6.18-linux-x64/blender"
-MANIFEST="$REPO/distill_methods/manifests/5k_balanced/train.csv"
+export MANIFEST="$REPO/distill_methods/manifests/5k_balanced/train.csv"
 
 echo "================================================================"
 echo "Render 5K multinode: $(date -Iseconds)"
