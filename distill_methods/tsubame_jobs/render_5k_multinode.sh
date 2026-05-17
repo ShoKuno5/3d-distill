@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #$ -cwd
-#$ -l node_f=4
-#$ -pe openmpi 4
+#$ -l node_f=3
+#$ -pe openmpi 3
 #$ -l h_rt=2:00:00
 #$ -N render-5k-multinode
 #$ -j y
