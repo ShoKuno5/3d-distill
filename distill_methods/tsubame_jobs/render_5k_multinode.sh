@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 #$ -cwd
-#$ -l node_f=3
-#$ -pe openmpi 3
-#$ -l h_rt=2:00:00
+#$ -l node_f=2
+#$ -pe openmpi 2
+#$ -l h_rt=3:00:00
 #$ -N render-5k-multinode
 #$ -j y
 #$ -o /gs/fs/tga-koike-shanda2/sk/scratch/tsubame_logs/render_5k_multinode.qsub.log
@@ -24,7 +24,8 @@ tsubame_setup_env
 tsubame_setup_multinode_env
 
 export BLENDER_BIN="$TSUBAME_ROOT/blender-3.6.18-linux-x64/blender"
-export MANIFEST="$REPO/distill_methods/manifests/5k_balanced/train.csv"
+# MANIFEST overridable from qsub -v MANIFEST=...
+export MANIFEST="${MANIFEST:-$REPO/distill_methods/manifests/5k_balanced/train.csv}"
 
 echo "================================================================"
 echo "Render 5K multinode: $(date -Iseconds)"
