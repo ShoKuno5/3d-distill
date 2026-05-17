@@ -142,19 +142,26 @@ def pick_subset(
     target: int,
     min_aesthetic: float,
     toys4k_uids: set[str],
+    exclude_oids: set[str],
     rng: random.Random,
 ) -> list[tuple[str, Path, float]]:
     """Return up to `target` (object_id, glb_path, aesthetic) tuples.
 
     Filters: drop Toys4k overlaps; drop entries below min_aesthetic
-    when aesthetics is non-empty. Sorts by aesthetic descending and
-    randomly samples from the top-2x pool for quality + diversity."""
+    when aesthetics is non-empty; drop entries whose oid is in
+    exclude_oids (used to skip already-tried-and-failed samples).
+    Sorts by aesthetic descending and randomly samples from the
+    top-2x pool for quality + diversity."""
     candidates: list[tuple[str, Path, float]] = []
     drop_toys = 0
     drop_aes = 0
+    drop_excl = 0
     for oid, path in files.items():
         if oid in toys4k_uids:
             drop_toys += 1
+            continue
+        if oid in exclude_oids:
+            drop_excl += 1
             continue
         aes = aesthetics.get(oid, 0.0 if aesthetics else float("inf"))
         if aesthetics and aes < min_aesthetic:
@@ -163,10 +170,19 @@ def pick_subset(
         candidates.append((oid, path, aes))
 
     print(f"    files on disk: {len(files)}, after filters: {len(candidates)} "
-          f"(dropped {drop_toys} Toys4k, {drop_aes} below aesthetic floor)")
+          f"(dropped {drop_toys} Toys4k, {drop_aes} below aesthetic floor, "
+          f"{drop_excl} excluded)")
 
     if not candidates:
         return []
+    if not aesthetics:
+        # No aesthetic data available (e.g. Objaverse-Sketchfab where the
+        # metadata uses URL UUIDs that don't match the on-disk filenames).
+        # Sample uniformly from ALL candidates to avoid filesystem-order bias.
+        if len(candidates) <= target:
+            return candidates
+        return rng.sample(candidates, target)
+    # Aesthetic-aware: top 2x pool then random sample for quality + diversity.
     candidates.sort(key=lambda x: -x[2])
     if len(candidates) <= target:
         return candidates
@@ -200,11 +216,26 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--name", default="5k_balanced",
                         help="Output dir: distill_methods/manifests/<name>/train.csv")
+    parser.add_argument("--exclude-oids-file", action="append", default=[],
+                        help="Path to a text file of object_ids (one per line) to exclude. "
+                             "Can be passed multiple times to combine lists. Useful for "
+                             "skipping already-tried-and-failed samples and for skipping "
+                             "samples that are already in an earlier manifest.")
     args = parser.parse_args()
 
     rng = random.Random(args.seed)
     toys4k_uids, _ = load_toys4k_refs()
     print(f"Toys4k guard: {len(toys4k_uids)} sha256")
+
+    exclude_oids: set[str] = set()
+    for fp in args.exclude_oids_file:
+        with open(fp) as f:
+            for ln in f:
+                ln = ln.strip()
+                if ln:
+                    exclude_oids.add(ln)
+    if exclude_oids:
+        print(f"Exclude list: {len(exclude_oids)} oids loaded from {len(args.exclude_oids_file)} files")
     print(f"HSSD glb root:      {HSSD_GLB_ROOT}")
     print(f"Objaverse glb root: {OBJAVERSE_GLB_ROOT}")
     print(f"Derived assets:     {SK_DATA_ROOT}")
@@ -213,19 +244,23 @@ def main() -> None:
     print(f"Aesthetic floor:    {args.min_aesthetic}")
     print()
 
-    print("Scanning HSSD ...")
-    hssd_files = scan_hssd()
-    hssd_aes = load_aesthetic_index(HSSD_META, "file_identifier_stem")
-    print(f"  HSSD aesthetic index: {len(hssd_aes)} entries")
-    hssd_picked = pick_subset(hssd_files, hssd_aes, args.hssd_count,
-                              args.min_aesthetic, toys4k_uids, rng)
+    hssd_picked: list = []
+    if args.hssd_count > 0:
+        print("Scanning HSSD ...")
+        hssd_files = scan_hssd()
+        hssd_aes = load_aesthetic_index(HSSD_META, "file_identifier_stem")
+        print(f"  HSSD aesthetic index: {len(hssd_aes)} entries")
+        hssd_picked = pick_subset(hssd_files, hssd_aes, args.hssd_count,
+                                  args.min_aesthetic, toys4k_uids, exclude_oids, rng)
 
-    print("Scanning Objaverse_sketchfab ...")
-    obja_files = scan_objaverse()
-    obja_aes = load_aesthetic_index(OBJAVERSE_META, "file_identifier_uuid")
-    print(f"  Objaverse aesthetic index: {len(obja_aes)} entries")
-    obja_picked = pick_subset(obja_files, obja_aes, args.objaverse_count,
-                              args.min_aesthetic, toys4k_uids, rng)
+    obja_picked: list = []
+    if args.objaverse_count > 0:
+        print("Scanning Objaverse_sketchfab ...")
+        obja_files = scan_objaverse()
+        obja_aes = load_aesthetic_index(OBJAVERSE_META, "file_identifier_uuid")
+        print(f"  Objaverse aesthetic index: {len(obja_aes)} entries")
+        obja_picked = pick_subset(obja_files, obja_aes, args.objaverse_count,
+                                  args.min_aesthetic, toys4k_uids, exclude_oids, rng)
 
     rows = []
     rows.extend((oid, "hssd", p, aes) for oid, p, aes in hssd_picked)
