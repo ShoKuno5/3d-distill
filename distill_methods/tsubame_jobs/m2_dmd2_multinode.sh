@@ -1,16 +1,18 @@
 #!/usr/bin/env bash
 #$ -cwd
-#$ -l node_f=4
-#$ -pe openmpi 4
+#$ -l node_f=2
+#$ -pe openmpi 2
 #$ -l h_rt=24:00:00
 #$ -N m2dmd2-multinode
 #$ -j y
 #$ -o /gs/fs/tga-koike-shanda2/sk/scratch/tsubame_logs/m2_dmd2_multinode.qsub.log
 #
 # M2 DMD2 distillation on TSUBAME 4.0 H100, multi-node DDP.
-#   - 4 nodes x 4 GPU = 16 H100 SXM5 96GB
-#   - Per-GPU batch = 4, effective batch = 64
-#   - 5K-sample training data (HSSD + ABO + Objaverse-LVIS balanced mix)
+#   - 2 nodes x 4 GPU = 8 H100 SXM5 96GB
+#     (capped at 8 GPU per user as fair team share even on ar 6991+6992)
+#   - Per-GPU batch = 4, effective batch = 32
+#   - 5K-sample training data (HSSD + Objaverse-XL balanced mix;
+#     ABO deferred until tar extraction)
 #   - 15000 steps, gradient checkpointing on
 #
 # Layout assumption:
