@@ -1,20 +1,24 @@
 #!/usr/bin/env bash
 #$ -cwd
-#$ -l node_f=4
-#$ -pe openmpi 4
-#$ -l h_rt=6:00:00
+#$ -l node_f=2
+#$ -pe openmpi 2
+#$ -l h_rt=8:00:00
 #$ -N encode-5k-multinode
 #$ -j y
 #$ -o /gs/fs/tga-koike-shanda2/sk/scratch/tsubame_logs/encode_5k_multinode.qsub.log
 #
-# Pre-encode VAE latents for the M2 5K balanced manifest across 4
-# nodes x 4 GPU = 16 shards using prepare_training_data.py's built-in
+# Pre-encode VAE latents for the M2 5K balanced manifest across 2
+# nodes x 4 GPU = 8 shards using prepare_training_data.py's built-in
 # --shard / --num-shards. Each shard runs the teacher 50-step ODE on
-# ~313 samples.
+# ~625 samples.
 #
-# Estimate: 5000 / 16 = ~313 rows per shard, ~30 s per encode =>
-# ~157 min wall clock. h_rt=6h leaves margin (first-run model load
+# Estimate: 5000 / 8 = ~625 rows per shard, ~30 s per encode =>
+# ~5.2 h wall clock. h_rt=8h leaves margin (first-run model load
 # adds ~3 min cold start per shard).
+#
+# node_f=2 (not 4) to leave the other half of ar 6925 free for team
+# members; M2 training on ar 6991+6992 (5/18-25) can scale up to 4
+# nodes since we'll have 8 nodes team-shared.
 #
 # Submit:  qsub -ar 6925 -g tga-koike-shanda encode_5k_multinode.sh
 
