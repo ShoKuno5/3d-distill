@@ -29,6 +29,7 @@ RESOLUTION = 512
 
 # Blender paths (searched in order)
 _BLENDER_CANDIDATES = [
+    Path("/gs/fs/tga-koike-shanda2/sk/blender-3.6.18-linux-x64/blender"),  # TSUBAME
     Path(__file__).resolve().parents[3] / "envs" / "blender-3.6.16-linux-x64" / "blender",
     Path("/usr/bin/blender"),
 ]
@@ -82,42 +83,43 @@ def render_multiview_blender(
     if blender is None:
         raise RuntimeError("Blender not found")
 
-    # Normalize mesh to temp file
-    norm_dir = os.path.join(output_dir, ".tmp")
-    norm_path = os.path.join(norm_dir, "normalized.obj")
-    _normalize_mesh_file(mesh_path, norm_path)
+    # Only render azimuths whose output doesn't already exist.
+    todo = [az for az in azimuths
+            if not os.path.exists(os.path.join(output_dir, f"view_{int(az)}.png"))]
 
-    output_paths = []
-    for az in azimuths:
-        out_path = os.path.join(output_dir, f"view_{az}.png")
-        if os.path.exists(out_path):
-            output_paths.append(out_path)
-            continue
+    if todo:
+        # Normalize the mesh once, then render ALL needed views in a single
+        # Blender process. Launching Blender per view (and re-importing the
+        # mesh + re-initializing CUDA each time) was the dominant overhead.
+        norm_dir = os.path.join(output_dir, ".tmp")
+        norm_path = os.path.join(norm_dir, "normalized.obj")
+        _normalize_mesh_file(mesh_path, norm_path)
 
         cmd = [
             blender, "--background", "--python", str(_BLENDER_SCRIPT),
             "--", "--input", norm_path,
-            "--output", out_path,
+            "--output-dir", output_dir,
+            "--azimuths", ",".join(str(float(az)) for az in todo),
             "--resolution", str(resolution),
-            "--azimuth", str(float(az)),
             "--elevation", str(float(elevation)),
         ]
 
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-        if result.returncode == 0 and os.path.exists(out_path):
-            output_paths.append(out_path)
-        else:
-            err = result.stderr[-200:] if result.stderr else "unknown"
-            print(f"    Blender render failed for az={az}: {err}")
+        result = subprocess.run(cmd, capture_output=True, text=True,
+                                timeout=60 + 30 * len(todo))
+        if result.returncode != 0:
+            err = result.stderr[-300:] if result.stderr else "unknown"
+            print(f"    Blender render failed ({len(todo)} views): {err}")
 
-    # Clean up temp normalized mesh
-    try:
-        os.remove(norm_path)
-        os.rmdir(norm_dir)
-    except OSError:
-        pass
+        # Clean up temp normalized mesh
+        try:
+            os.remove(norm_path)
+            os.rmdir(norm_dir)
+        except OSError:
+            pass
 
-    return output_paths
+    # Return existing views in azimuth order (cached + freshly rendered).
+    return [os.path.join(output_dir, f"view_{int(az)}.png") for az in azimuths
+            if os.path.exists(os.path.join(output_dir, f"view_{int(az)}.png"))]
 
 
 def render_multiview(
@@ -149,6 +151,8 @@ def render_all_meshes(
     mesh_filename: str = "mesh_raw.obj",
     object_ids: list[str] | None = None,
     resolution: int = RESOLUTION,
+    azimuths: list[float] = AZIMUTHS,
+    elevation: float = ELEVATION,
 ) -> int:
     """Render multiview images for all predicted meshes in a directory.
 
@@ -158,6 +162,8 @@ def render_all_meshes(
         mesh_filename: Mesh filename within each object directory.
         object_ids: If provided, only render these objects.
         resolution: Render resolution.
+        azimuths: Azimuth angles (degrees); also defines the cached view filenames.
+        elevation: Elevation angle (degrees).
 
     Returns:
         Number of successfully rendered objects.
@@ -179,16 +185,16 @@ def render_all_meshes(
         render_dir = os.path.join(output_dir, oid)
 
         # Skip if already rendered
-        if all(os.path.exists(os.path.join(render_dir, f"view_{az}.png")) for az in AZIMUTHS):
+        if all(os.path.exists(os.path.join(render_dir, f"view_{int(az)}.png")) for az in azimuths):
             success += 1
             continue
 
         try:
-            paths = render_multiview(str(mesh_path), render_dir, resolution)
-            if len(paths) == len(AZIMUTHS):
+            paths = render_multiview(str(mesh_path), render_dir, resolution, azimuths, elevation)
+            if len(paths) == len(azimuths):
                 success += 1
             else:
-                print(f"  WARNING: {oid}: only {len(paths)}/{len(AZIMUTHS)} views rendered")
+                print(f"  WARNING: {oid}: only {len(paths)}/{len(azimuths)} views rendered")
         except Exception as e:
             print(f"  ERROR: {oid}: {e}")
 

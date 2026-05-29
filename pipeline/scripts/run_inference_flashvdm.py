@@ -30,13 +30,24 @@ def main():
     parser.add_argument("--max-samples", type=int, default=None)
     parser.add_argument("--check-only", action="store_true")
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--shard-index", type=int, default=0,
+                        help="This worker's shard index in [0, num_shards). Samples sliced as samples[shard_index::num_shards].")
+    parser.add_argument("--num-shards", type=int, default=1,
+                        help="Total number of shards (workers). Default 1 = no sharding.")
     args = parser.parse_args()
+    if args.num_shards < 1 or not (0 <= args.shard_index < args.num_shards):
+        print(f"ERROR: invalid sharding: shard_index={args.shard_index}, num_shards={args.num_shards}")
+        sys.exit(1)
 
     with open(args.config) as f:
         cfg = yaml.safe_load(f)
     resolve_model_paths(cfg)
 
     samples = load_and_filter_samples(cfg, max_samples_override=args.max_samples, manifest_key="test_manifest")
+    if args.num_shards > 1:
+        before = len(samples)
+        samples = samples[args.shard_index::args.num_shards]
+        print(f"Shard {args.shard_index}/{args.num_shards}: {len(samples)}/{before} samples")
 
     model_cfg = get_model_config(cfg, "flashvdm")
     if model_cfg is None:

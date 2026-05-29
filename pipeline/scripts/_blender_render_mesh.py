@@ -1,11 +1,25 @@
-"""Blender Python script: render a single OBJ mesh to PNG.
+"""Blender Python script: render an OBJ mesh to one or more views.
 
-Called by render_grid_blender.py via:
+Single view (legacy interface, still used by render_grid_blender.py and
+render_intermediate_steps.py):
   blender --background --python _blender_render_mesh.py -- \
-    --input mesh.obj --output render.png --resolution 512
+    --input mesh.obj --output render.png --resolution 512 \
+    [--azimuth A --elevation E]
+
+Multi view (one process, many azimuths — avoids re-launching Blender and
+re-importing the mesh once per view):
+  blender --background --python _blender_render_mesh.py -- \
+    --input mesh.obj --output-dir out/ --azimuths 0,90,180,270 \
+    --resolution 512 [--elevation E]
+  → writes out/view_<int(az)>.png for each azimuth.
+
+The scene (mesh import, material, lighting, world, render settings, CUDA
+device selection) is built ONCE; in multi-view mode only the camera moves
+between renders. Lights are fixed in world space (view-independent), matching
+the previous per-view behaviour.
 
 Camera and lighting are set up for unit-sphere-normalized meshes.
-Renders with Cycles CPU, transparent background composited to white.
+Renders with Cycles GPU (CUDA), transparent background.
 """
 
 import bpy
@@ -23,17 +37,41 @@ else:
 import argparse
 parser = argparse.ArgumentParser()
 parser.add_argument("--input", required=True, help="Input OBJ file path")
-parser.add_argument("--output", required=True, help="Output PNG file path")
+parser.add_argument("--output", help="Output PNG path (single-view mode)")
+parser.add_argument("--output-dir", dest="output_dir",
+                    help="Output directory (multi-view mode); writes view_<az>.png")
 parser.add_argument("--resolution", type=int, default=512)
-parser.add_argument("--azimuth", type=float, default=135.0, help="Camera azimuth (degrees)")
+parser.add_argument("--azimuth", type=float, default=135.0,
+                    help="Camera azimuth in degrees (single-view mode)")
+parser.add_argument("--azimuths", help="Comma-separated azimuths in degrees (multi-view mode)")
 parser.add_argument("--elevation", type=float, default=25.0, help="Camera elevation (degrees)")
 args = parser.parse_args(argv)
 
-# --- Clear default scene ---
+# --- Resolve render jobs: list of (azimuth_deg, output_path) ---
+jobs = []
+if args.azimuths and args.output_dir:
+    os.makedirs(args.output_dir, exist_ok=True)
+    for tok in args.azimuths.split(","):
+        tok = tok.strip()
+        if not tok:
+            continue
+        az = float(tok)
+        jobs.append((az, os.path.join(args.output_dir, f"view_{int(az)}.png")))
+elif args.output:
+    jobs.append((args.azimuth, args.output))
+else:
+    print("ERROR: provide either --output (single view) or --output-dir + --azimuths (multi view)")
+    sys.exit(1)
+
+if not jobs:
+    print("ERROR: no azimuths to render")
+    sys.exit(1)
+
+# --- Clear default scene (ONCE) ---
 bpy.ops.wm.read_factory_settings(use_empty=True)
 scene = bpy.context.scene
 
-# --- Import OBJ ---
+# --- Import OBJ (ONCE) ---
 bpy.ops.import_scene.obj(filepath=args.input, axis_forward='-Z', axis_up='Y')
 
 # Select imported objects
@@ -73,7 +111,7 @@ for obj in imported:
     bpy.ops.object.shade_smooth()
     obj.select_set(False)
 
-# --- Camera ---
+# --- Camera (created once; repositioned per view) ---
 cam_data = bpy.data.cameras.new(name="Camera")
 cam_data.lens = 50
 cam_data.sensor_width = 36
@@ -81,22 +119,7 @@ cam_obj = bpy.data.objects.new("Camera", cam_data)
 scene.collection.objects.link(cam_obj)
 scene.camera = cam_obj
 
-# Position camera for unit sphere objects
-az = math.radians(args.azimuth)
-el = math.radians(args.elevation)
-dist = 3.0
-cx = dist * math.cos(el) * math.sin(az)
-cy = dist * math.cos(el) * math.cos(az)
-cz = dist * math.sin(el)
-cam_obj.location = (cx, -cy, cz)
-
-# Point camera at origin
-direction = cam_obj.location.copy()
-direction.negate()
-rot_quat = direction.to_track_quat('-Z', 'Y')
-cam_obj.rotation_euler = rot_quat.to_euler()
-
-# --- Lighting ---
+# --- Lighting (fixed in world space, view-independent) ---
 # Key light
 key_data = bpy.data.lights.new(name="KeyLight", type='AREA')
 key_data.energy = 100
@@ -136,7 +159,7 @@ bg.inputs['Color'].default_value = (1, 1, 1, 1)
 scene.render.engine = 'CYCLES'
 scene.cycles.samples = 64
 
-# GPU rendering (CUDA)
+# GPU rendering (CUDA) — device enumeration done once
 prefs = bpy.context.preferences.addons.get("cycles")
 if prefs:
     prefs.preferences.compute_device_type = "CUDA"
@@ -153,10 +176,23 @@ scene.render.film_transparent = True
 scene.render.image_settings.file_format = 'PNG'
 scene.render.image_settings.color_mode = 'RGBA'
 
-# Output
-os.makedirs(os.path.dirname(os.path.abspath(args.output)), exist_ok=True)
-scene.render.filepath = args.output
+# --- Render each view (camera moves; everything else stays) ---
+dist = 3.0
+el = math.radians(args.elevation)
+for az_deg, out_path in jobs:
+    az = math.radians(az_deg)
+    cx = dist * math.cos(el) * math.sin(az)
+    cy = dist * math.cos(el) * math.cos(az)
+    cz = dist * math.sin(el)
+    cam_obj.location = (cx, -cy, cz)
 
-# --- Render ---
-bpy.ops.render.render(write_still=True)
-print(f"Rendered: {args.output}")
+    # Point camera at origin
+    direction = cam_obj.location.copy()
+    direction.negate()
+    rot_quat = direction.to_track_quat('-Z', 'Y')
+    cam_obj.rotation_euler = rot_quat.to_euler()
+
+    os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
+    scene.render.filepath = out_path
+    bpy.ops.render.render(write_still=True)
+    print(f"Rendered: {out_path}")

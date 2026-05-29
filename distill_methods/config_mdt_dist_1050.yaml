@@ -1,0 +1,34 @@
+# MDT-Dist (TRELLIS v1 + 2+2-step distillation, weights swap) on TSUBAME.
+# Toys4k 1050-sample eval. Predictions under m2_cd_run/eval_1050/.
+
+dataset:
+  name: toys4k
+  root: /gs/fs/tga-koike-shanda2/sk/data/toys4k/official
+  manifest: /gs/fs/tga-koike-shanda2/sk/3d-distill/distill_methods/manifests/toys4k_eval_1000/test.csv
+  test_manifest: /gs/fs/tga-koike-shanda2/sk/3d-distill/distill_methods/manifests/toys4k_eval_1000/test.csv
+  max_samples: null
+  sample_ids_file: null
+  category_filter: null
+
+output_root: /gs/fs/tga-koike-shanda2/sk/scratch/distill_methods/m2_cd_tsubame_20260519_1629/eval_1050
+
+models:
+  - name: mdt_dist
+    version: "v1-mdt-dist"
+    description: "MDT-Dist distilled from TRELLIS v1 (2+2-step, weights swap)"
+    method: mdt_dist
+    mesh_filename: mesh_raw.obj
+    predictions_root: /gs/fs/tga-koike-shanda2/sk/scratch/distill_methods/m2_cd_tsubame_20260519_1629/eval_1050/predictions/mdt_dist/default
+    inference_params:
+      ss_steps: 2
+      slat_steps: 2
+      ss_cfg: 5.0
+      slat_cfg: 1.0
+      ss_cfg_interval: [0.5, 1.0]
+      slat_cfg_interval: [0.5, 1.0]
+      rescale_t: 1.0
+      sigma_min: 1.0e-5
+      ckpts_dir: /gs/fs/tga-koike-shanda2/sk/models/mdt_dist/ckpts
+
+seeds:
+  - 42

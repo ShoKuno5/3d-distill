@@ -26,3 +26,10 @@ __pycache__/
 
 # Unrelated tarball (accidentally dropped here)
 xkbcommon-1.5.1.tar.gz
+
+# External evaluation models (ULIP, Uni3D) — large checkpoints
+pipeline/src/evaluation/external/
+
+# Editor / process backup files
+*.bak_*
+*.bak.*

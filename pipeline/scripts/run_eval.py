@@ -553,6 +553,60 @@ def main():
     # --- Summary ---
     _write_summary(per_sample_rows, model_names, metrics_dir, cfg, logger)
 
+    # --- Multiview rendering (for FD and CLIP-I) ---
+    fd_cfg_check = cfg.get("metrics", {}).get("frechet_distance", {})
+    clip_i_cfg_check = cfg.get("metrics", {}).get("clip_image", {})
+    needs_renders = fd_cfg_check.get("enabled", False) or clip_i_cfg_check.get("enabled", False)
+    if needs_renders:
+        logger.info("Rendering multiview images (GT + per-model)...")
+        try:
+            from src.evaluation.multiview_renderer import render_multiview, render_all_meshes
+            renders_dir = os.path.join(output_root, "multiview_renders")
+            gt_dir = os.path.join(renders_dir, "gt")
+
+            mv_cfg = fd_cfg_check.get("multiview", {})
+            azim_cfg = mv_cfg.get("azimuths", [0, 90, 180, 270])
+            elev_cfg = mv_cfg.get("elevation", 30)
+            res_cfg = mv_cfg.get("resolution", 512)
+
+            # GT renders (one-time, cached). Only FD consumes these — CLIP-I
+            # compares the input image to per-model renders, not the GT mesh —
+            # so skip GT rendering entirely when FD is disabled.
+            if fd_cfg_check.get("enabled", False):
+                n_gt_rendered = 0
+                for s in samples:
+                    sid_dir = os.path.join(gt_dir, s.object_id)
+                    if all(
+                        os.path.exists(os.path.join(sid_dir, f"view_{int(az)}.png"))
+                        for az in azim_cfg
+                    ):
+                        continue
+                    try:
+                        render_multiview(s.mesh_obj, sid_dir,
+                                         resolution=res_cfg, azimuths=azim_cfg, elevation=elev_cfg)
+                        n_gt_rendered += 1
+                    except Exception as e:
+                        logger.error(f"  GT render failed for {s.object_id}: {e}")
+                logger.info(f"  GT renders: {n_gt_rendered} new (cached others)")
+
+            # Per-model renders (needed by both FD and CLIP-I)
+            object_ids = [s.object_id for s in samples]
+            for mcfg in model_cfgs:
+                model_name = mcfg["name"]
+                pred_render_dir = os.path.join(renders_dir, model_name)
+                n_pred = render_all_meshes(
+                    mcfg["predictions_root"],
+                    pred_render_dir,
+                    mcfg.get("mesh_filename", "mesh_raw.obj"),
+                    object_ids,
+                    resolution=res_cfg,
+                    azimuths=azim_cfg,
+                    elevation=elev_cfg,
+                )
+                logger.info(f"  {model_name}: {n_pred}/{len(object_ids)} rendered")
+        except Exception as e:
+            logger.error(f"Render orchestration failed: {e}", exc_info=True)
+
     # --- Frechet Distance (if configured) ---
     fd_cfg = cfg.get("metrics", {}).get("frechet_distance", {})
     if fd_cfg.get("enabled", False):
@@ -589,6 +643,37 @@ def main():
                 logger.info(f"  FD results: {fd_path}")
         except ImportError as e:
             logger.warning(f"  FD computation skipped (missing dependency): {e}")
+
+
+    # --- CLIP-I (if configured) ---
+    clip_i_cfg = cfg.get("metrics", {}).get("clip_image", {})
+    if clip_i_cfg.get("enabled", False):
+        logger.info("Computing CLIP-I metrics...")
+        try:
+            from src.evaluation.clip_image_metric import compute_clip_image_for_run
+            renders_root = os.path.join(output_root, "multiview_renders")
+            azim_cfg = fd_cfg_check.get("multiview", {}).get("azimuths", [0, 90, 180, 270])
+            compute_clip_image_for_run(
+                cfg=cfg, samples=samples,
+                renders_root=renders_root, output_root=output_root,
+                model_cfgs=model_cfgs,
+                view_names=[f"view_{int(az)}.png" for az in azim_cfg],
+            )
+        except Exception as e:
+            logger.warning(f"  CLIP-I skipped: {e}", exc_info=True)
+
+    # --- Cross-modal (ULIP-I, Uni3D-I) ---
+    cm_cfg = cfg.get("metrics", {}).get("cross_modal", {})
+    if cm_cfg.get("enabled", False):
+        logger.info("Computing ULIP-I and Uni3D-I metrics...")
+        try:
+            from src.evaluation.cross_modal_metric import compute_cross_modal_for_run
+            compute_cross_modal_for_run(
+                cfg=cfg, samples=samples, output_root=output_root,
+                model_cfgs=model_cfgs,
+            )
+        except Exception as e:
+            logger.warning(f"  Cross-modal skipped: {e}", exc_info=True)
 
     logger.info("Evaluation complete.")
 

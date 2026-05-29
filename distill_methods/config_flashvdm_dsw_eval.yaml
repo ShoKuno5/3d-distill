@@ -1,0 +1,81 @@
+# flashvdm_dsw eval-only config (Tier1+2 metric)
+# predictions/flashvdm_dsw/default/ に 105 meshes (mesh_raw.obj) 揃ってる前提
+dataset:
+  name: toys4k
+  root: /gs/fs/tga-koike-shanda2/sk/data/toys4k/official
+  manifest: /gs/fs/tga-koike-shanda2/sk/3d-distill/distill_methods/manifests/toys4k_eval_105/test.csv
+  test_manifest: /gs/fs/tga-koike-shanda2/sk/3d-distill/distill_methods/manifests/toys4k_eval_105/test.csv
+  max_samples: null
+  sample_ids_file: null
+  category_filter: null
+
+output_root: /gs/fs/tga-koike-shanda2/sk/scratch/distill_methods/m2_cd_tsubame_20260519_1629
+
+models:
+  - name: flashvdm_dsw
+    version: "2.0-turbo"
+    description: "HY3D-2.0 turbo + FlashVDM (DSW recipe, ported)"
+    mesh_filename: mesh_raw.obj
+    predictions_root: /gs/fs/tga-koike-shanda2/sk/scratch/distill_methods/m2_cd_tsubame_20260519_1629/predictions/flashvdm_dsw/default
+    inference_params:
+      num_inference_steps: 5
+      octree_resolution: 380
+      num_chunks: 200000
+
+seeds:
+  - 42
+
+normalization:
+  gt_method: unit_sphere
+  pred_method: unit_sphere
+
+cleaning:
+  remove_nan: true
+  remove_inf: true
+  remove_degenerate_faces: true
+  remove_unreferenced_vertices: true
+  remove_tiny_components: true
+  tiny_component_threshold: 0.01
+
+sampling:
+  alignment_points: 100000
+  eval_points: 16384
+
+alignment:
+  track_a:
+    method: similarity_icp
+    initial_rotations: 24
+    icp_max_iterations: 100
+    allow_reflection: false
+    allow_nonuniform_scale: false
+  track_b:
+    method: scale_only
+    allow_rotation: false
+
+metrics:
+  chamfer_distance:
+    variant: L2_squared
+  f_score:
+    thresholds: [0.01, 0.02]
+  hausdorff: true
+  mesh_quality_stats: true
+  bootstrap_ci:
+    enabled: true
+    n_bootstrap: 1000
+    confidence: 0.95
+  frechet_distance:
+    enabled: true
+    models: [inception_v3, dinov2]
+    multiview:
+      azimuths: [0, 90, 180, 270]
+      elevation: 30
+      resolution: 512
+  clip_image:
+    enabled: true
+  cross_modal:
+    enabled: true
+
+execution:
+  skip_existing: true
+  continue_on_failure: true
+  log_level: INFO

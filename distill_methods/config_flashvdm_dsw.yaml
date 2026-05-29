@@ -1,0 +1,28 @@
+# FlashVDM (HY3D-2.0 turbo + FlashVDM, DSW-verified recipe) on TSUBAME.
+# Loads tencent/Hunyuan3D-2 subfolder=hunyuan3d-dit-v2-0-turbo via hy3dgen.shapegen.
+# Toys4k 105-sample test set.
+
+dataset:
+  name: toys4k
+  root: /gs/fs/tga-koike-shanda2/sk/data/toys4k/official
+  manifest: /gs/fs/tga-koike-shanda2/sk/3d-distill/distill_methods/manifests/toys4k_eval_105/test.csv
+  test_manifest: /gs/fs/tga-koike-shanda2/sk/3d-distill/distill_methods/manifests/toys4k_eval_105/test.csv
+  max_samples: null
+  sample_ids_file: null
+  category_filter: null
+
+output_root: /gs/fs/tga-koike-shanda2/sk/scratch/distill_methods/m2_cd_tsubame_20260519_1629
+
+models:
+  - name: flashvdm
+    version: "2.0-turbo"
+    description: "Hunyuan3D-2.0 turbo DiT + FlashVDM (5-step, DSW recipe)"
+    mesh_filename: mesh_raw.obj
+    predictions_root: /gs/fs/tga-koike-shanda2/sk/scratch/distill_methods/m2_cd_tsubame_20260519_1629/predictions/flashvdm_dsw/default
+    inference_params:
+      num_inference_steps: 5
+      octree_resolution: 380
+      num_chunks: 200000
+
+seeds:
+  - 42

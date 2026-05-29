@@ -1,0 +1,191 @@
+dataset:
+  name: toys4k
+  root: /gs/fs/tga-koike-shanda2/sk/data/toys4k/official
+  manifest: /gs/fs/tga-koike-shanda2/sk/3d-distill/distill_methods/manifests/toys4k_eval_105/test.csv
+  test_manifest: /gs/fs/tga-koike-shanda2/sk/3d-distill/distill_methods/manifests/toys4k_eval_105/test.csv
+  max_samples: null
+  sample_ids_file: null
+  category_filter: null
+training:
+  training_data_dir: /gs/fs/tga-koike-shanda2/sk/scratch/distill_methods/m2_cd_tsubame_20260519_1629/training_data
+  batch_size: 4
+  num_workers: 4
+  seed: 42
+  bf16: true
+  gradient_clip: 1.0
+  log_interval: 50
+  save_interval: 1000
+  total_steps: 15000
+  optimizer:
+    type: AdamW
+    lr: 1.0e-05
+    weight_decay: 0.01
+  model:
+    pretrained: tencent/Hunyuan3D-2.1
+    z_scale_factor: 1.0
+    lora:
+      rank: 64
+      alpha: 64
+      target_modules:
+      - to_q
+      - to_k
+      - to_v
+      - to_out.0
+    ema:
+      decay: 0.999
+      use_num_updates: true
+  methods:
+    pd:
+      stages:
+      - - 50
+        - 25
+      - - 25
+        - 12
+      - - 12
+        - 6
+      steps_per_stage: 5000
+    cd:
+      num_timesteps: 50
+    dmd1:
+      lambda_reg: 1.0
+      pairs_dir: /gs/fs/tga-koike-shanda2/sk/scratch/distill_methods/m2_cd_tsubame_20260519_1629/dmd1_pairs
+      num_pairs: 20000
+    dmd2:
+      lr_d: 5.0e-05
+      lambda_gan: 0.1
+      d_update_ratio: 5
+      replay_buffer_size: 1024
+      replay_warmup: 128
+    sid:
+      lsg_teacher_scale: 11.25
+      lsg_fake_scale: 0.0
+      grad_norm_type: adaptive
+  cfg:
+    guidance_scale: 7.5
+models:
+- name: teacher_50step
+  version: '2.1'
+  description: Hunyuan3D-2.1 teacher (50-step)
+  mesh_filename: mesh_raw.obj
+  inference_params:
+    num_inference_steps: 50
+    guidance_scale: 5.0
+    octree_resolution: 384
+- name: flashvdm
+  version: 2.1-turbo
+  description: Hunyuan3D-2.1 turbo DiT + FlashVDM (5-step)
+  mesh_filename: mesh_raw.obj
+  inference_params:
+    num_inference_steps: 5
+    octree_resolution: 380
+    num_chunks: 200000
+- name: pd_6step
+  version: 2.1-pd
+  description: PD distilled (6-step)
+  method: pd
+  mesh_filename: mesh_raw.obj
+  inference_params:
+    num_inference_steps: 6
+    guidance_scale: 1.0
+    octree_resolution: 384
+- name: cd_4step
+  version: 2.1-cd
+  description: CD distilled (4-step)
+  method: cd
+  mesh_filename: mesh_raw.obj
+  inference_params:
+    num_inference_steps: 4
+    guidance_scale: 1.0
+    octree_resolution: 384
+- name: dmd1_1step
+  version: 2.1-dmd1
+  description: DMD1 distilled (1-step)
+  method: dmd1
+  mesh_filename: mesh_raw.obj
+  inference_params:
+    num_inference_steps: 1
+    guidance_scale: 1.0
+    octree_resolution: 384
+- name: dmd2_1step
+  version: 2.1-dmd2
+  description: DMD2 distilled (1-step)
+  method: dmd2
+  mesh_filename: mesh_raw.obj
+  inference_params:
+    num_inference_steps: 1
+    guidance_scale: 1.0
+    octree_resolution: 384
+    lora_path: /gs/fs/tga-koike-shanda2/sk/scratch/distill_methods/m2_dmd2_multinode_20260519_1022/checkpoints/dmd2/step_7000
+  predictions_root: /gs/fs/tga-koike-shanda2/sk/scratch/distill_methods/m2_dmd2_multinode_20260519_1022/predictions/dmd2_1step_step7000/default
+- name: sid_1step
+  version: 2.1-sid
+  description: SiD distilled (1-step)
+  method: sid
+  mesh_filename: mesh_raw.obj
+  inference_params:
+    num_inference_steps: 1
+    guidance_scale: 1.0
+    octree_resolution: 384
+wandb:
+  project: Hunyuan3D21_distillation
+  entity: shokuno-the-university-of-tokyo
+seeds:
+- 42
+output_root: /gs/fs/tga-koike-shanda2/sk/scratch/distill_methods/m2_dmd2_multinode_20260519_1022
+normalization:
+  gt_method: unit_sphere
+  pred_method: unit_sphere
+cleaning:
+  remove_nan: true
+  remove_inf: true
+  remove_degenerate_faces: true
+  remove_unreferenced_vertices: true
+  remove_tiny_components: true
+  tiny_component_threshold: 0.01
+sampling:
+  alignment_points: 100000
+  eval_points: 16384
+alignment:
+  track_a:
+    method: similarity_icp
+    initial_rotations: 24
+    icp_max_iterations: 100
+    allow_reflection: false
+    allow_nonuniform_scale: false
+  track_b:
+    method: scale_only
+    allow_rotation: false
+metrics:
+  chamfer_distance:
+    variant: L2_squared
+  f_score:
+    thresholds:
+    - 0.01
+    - 0.02
+  hausdorff: true
+  mesh_quality_stats: true
+  bootstrap_ci:
+    enabled: true
+    n_bootstrap: 1000
+    confidence: 0.95
+  frechet_distance:
+    enabled: true
+    models:
+    - inception_v3
+    - dinov2
+    multiview:
+      azimuths:
+      - 0
+      - 90
+      - 180
+      - 270
+      elevation: 30
+      resolution: 512
+  clip_image:
+    enabled: true
+  cross_modal:
+    enabled: true
+execution:
+  skip_existing: true
+  continue_on_failure: true
+  log_level: INFO
