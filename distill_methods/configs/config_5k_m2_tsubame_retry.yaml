@@ -1,7 +1,7 @@
 dataset:
   name: trellis500k_balanced_5k
   root: /gs/fs/tga-koike-shanda2/sk/data/trellis500k
-  manifest: /gs/fs/tga-koike-shanda2/sk/3d-distill/distill_methods/manifests/5k_balanced/train.csv
+  manifest: /gs/fs/tga-koike-shanda2/sk/3d-distill/distill_methods/manifests/5k_balanced/retry_517.csv
   test_manifest: /gs/fs/tga-koike-shanda2/sk/3d-distill/distill_methods/manifests/toys4k_eval_1000/test.csv
   max_samples: null
   sample_ids_file: null
@@ -117,7 +117,3 @@ models:
     slat_steps: 2
 normalization:
   gt_method: unit_sphere
-
-wandb:
-  project: Hunyuan3D21_distillation
-  entity: shokuno-the-university-of-tokyo

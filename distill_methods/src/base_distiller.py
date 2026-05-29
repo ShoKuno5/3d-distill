@@ -668,6 +668,17 @@ class BaseDistiller:
         # Re-register extra adapters (fake_score) on the rebuilt student
         # before DDP wrap, mirroring __init__'s ordering.
         self._add_extra_adapters()
+
+        # Re-enable gradient checkpointing on the rebuilt student before DDP
+        # wrap, mirroring __init__. Without this, resuming a run that trained
+        # with gc (DMD1/DMD2 set _use_gradient_checkpointing=True) silently
+        # loses gc and OOMs at the original batch size.
+        if (
+            getattr(self, "_use_gradient_checkpointing", False)
+            or self.config.get("training", {}).get("gradient_checkpointing", False)
+        ):
+            _enable_gradient_checkpointing(self.student)
+
         if self.is_distributed:
             ddp_find_unused = getattr(self, "_ddp_find_unused_parameters", False)
             self.student = DDP(

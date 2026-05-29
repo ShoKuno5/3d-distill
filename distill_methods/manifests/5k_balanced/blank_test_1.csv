@@ -1,0 +1,2 @@
+object_id,category,mesh_obj,point_cloud,input_image,aesthetic
+e4bb4fdd830d460b9f70ef6f43de4706,objaverse_sketchfab,/gs/bs/tga-koike-shanda/yurh/dataset/trellis-500k/ObjaverseXL_sketchfab/raw/hf-objaverse-v1/glbs/000-115/e4bb4fdd830d460b9f70ef6f43de4706.glb,/gs/fs/tga-koike-shanda2/sk/data/5k_balanced/objaverse_sketchfab/e4bb4fdd830d460b9f70ef6f43de4706/pc10K.npz,/gs/fs/tga-koike-shanda2/sk/data/5k_balanced/objaverse_sketchfab/e4bb4fdd830d460b9f70ef6f43de4706/image.png,6.8090

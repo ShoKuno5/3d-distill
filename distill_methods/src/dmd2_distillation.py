@@ -93,9 +93,6 @@ class DMD2Distillation(DMD1Distillation):
         # fake_score_adapter was created by inherited _add_extra_adapters()
         # during BaseDistiller.__init__, before DDP wrap.
 
-        # Unwrap DDP for feature-hook registration on the student below.
-        model = self.student.module if self.is_distributed else self.student
-
         # Discriminator
         # DiT hidden dim: determined from the model config
         dit_model = self.teacher
@@ -119,12 +116,9 @@ class DMD2Distillation(DMD1Distillation):
             self._hook_block_idx, len(teacher_blocks),
         )
 
-        # Also register hook on student (unwrap peft to find blocks)
-        student_dit = model.base_model.model if hasattr(model, "base_model") else model
-        student_blocks = self._get_hook_blocks(student_dit)
-        self._student_hook = student_blocks[self._hook_block_idx].register_forward_hook(
-            self._student_feature_hook
-        )
+        # Also register the hook on the student. Factored into a method so
+        # load_checkpoint can re-bind it after the student module is rebuilt.
+        self._register_student_hook()
 
         # Replay buffer
         self.replay_buffer = ReplayBuffer(dmd2_cfg["replay_buffer_size"])
@@ -506,9 +500,31 @@ class DMD2Distillation(DMD1Distillation):
         torch.save(train_state, train_state_path)
         logger.info("Saved optimizer_d and optimizer_fake states")
 
+    def _register_student_hook(self):
+        """(Re)register the student feature hook on the current self.student.
+
+        load_checkpoint rebuilds self.student via PeftModel.from_pretrained, so
+        the hook bound in __init__ points at the discarded module. Without
+        re-binding, self._features['student'] never populates and the
+        discriminator/GAN silently no-ops ("Feature hook failed, skipping D
+        update").
+        """
+        if getattr(self, "_student_hook", None) is not None:
+            self._student_hook.remove()
+        model = self.student.module if self.is_distributed else self.student
+        student_dit = model.base_model.model if hasattr(model, "base_model") else model
+        student_blocks = self._get_hook_blocks(student_dit)
+        self._student_hook = student_blocks[self._hook_block_idx].register_forward_hook(
+            self._student_feature_hook
+        )
+
     def load_checkpoint(self, path: str) -> int:
         """Load base checkpoint + discriminator weights and extra optimizer states."""
         resume_step = super().load_checkpoint(path)
+
+        # super() rebuilt self.student (new module) -> re-bind the student
+        # feature hook so the discriminator/GAN keeps receiving features.
+        self._register_student_hook()
 
         # Restore discriminator weights (backward compat: skip if missing)
         disc_path = os.path.join(path, "discriminator.pt")

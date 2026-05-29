@@ -57,9 +57,9 @@ tsubame_print_banner() {
     local NGPU
     NGPU=$(nvidia-smi -L | wc -l)
     local GPU_NAME
-    GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader -i 0)
+    GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader | head -1)
     local GPU_MEM
-    GPU_MEM=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader -i 0)
+    GPU_MEM=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader | head -1)
     echo "================================================================"
     echo "$NAME: $RUN_NAME"
     echo "output: $OUTPUT_ROOT"

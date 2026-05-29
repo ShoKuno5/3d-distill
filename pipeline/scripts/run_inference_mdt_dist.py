@@ -34,10 +34,20 @@ def main():
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
+    # Intra-node sharding via env (samples sliced as samples[shard::num_shards]).
+    shard_index = int(os.environ.get("MDT_SHARD_INDEX", "0"))
+    num_shards = int(os.environ.get("MDT_NUM_SHARDS", "1"))
+    if num_shards < 1 or not (0 <= shard_index < num_shards):
+        raise SystemExit(f"invalid sharding: shard_index={shard_index}, num_shards={num_shards}")
+
     with open(args.config) as f:
         cfg = yaml.safe_load(f)
 
     samples = load_and_filter_samples(cfg, max_samples_override=args.max_samples, manifest_key="test_manifest")
+    if num_shards > 1:
+        before = len(samples)
+        samples = samples[shard_index::num_shards]
+        print(f"Shard {shard_index}/{num_shards}: {len(samples)}/{before} samples")
 
     model_cfg = get_model_config(cfg, "mdt_dist")
     if model_cfg is None:
