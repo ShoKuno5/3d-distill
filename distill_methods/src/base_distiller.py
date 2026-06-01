@@ -665,6 +665,20 @@ class BaseDistiller:
         else:
             base = model
         self.student = PeftModel.from_pretrained(base, path, is_trainable=True)
+        # C1 fix: rebuild EMA against the REBUILT student, BEFORE extra adapters,
+        # mirroring __init__'s ordering. self.ema (from __init__) is bound by
+        # name+shadow-buffer to the discarded pre-resume module; load_state_dict
+        # into a stale-mapped LitEma is only correct by PEFT-name coincidence and
+        # breaks under any config / trainable-set drift. Rebuilding here (while
+        # only the default adapter exists, so fake_score is NOT tracked) makes
+        # the subsequent ema.pt load robust for long multi-segment resume runs.
+        ema_cfg = self.config["training"]["model"]["ema"]
+        self.ema = _load_ema(
+            self.student,
+            decay=ema_cfg["decay"],
+            use_num_updates=ema_cfg.get("use_num_updates", True),
+        )
+        self.ema.to(self.device)
         # Re-register extra adapters (fake_score) on the rebuilt student
         # before DDP wrap, mirroring __init__'s ordering.
         self._add_extra_adapters()
