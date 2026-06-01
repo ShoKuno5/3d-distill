@@ -77,6 +77,73 @@ def compute_geometry_metrics(
 
 
 @dataclass
+class ExtentMetrics:
+    """Relative-extent / aspect-ratio fidelity (the scale-honest signal).
+
+    Computed on the (longest-axis-normalized) clouds BEFORE alignment, on
+    bbox extents sorted descending so they are rotation/axis-permutation
+    invariant. Because both clouds are longest-axis normalized, ext_ratio_long
+    is ~1 by construction; the informative quantity is the SHORT axis — does a
+    flat coin/blade keep its thin axis, or does 1-step generation inflate it.
+    """
+    ext_ratio_long: float    # pred/gt longest-axis extent  (~1 under longest-axis norm)
+    ext_ratio_mid: float     # pred/gt middle-axis extent
+    ext_ratio_short: float   # pred/gt shortest-axis extent
+    short_axis_ratio: float  # alias of ext_ratio_short (the headline collapse signal)
+    bbox_diag_ratio: float   # ||pred bbox diag|| / ||gt bbox diag||
+    aspect_error: float      # |log( (short/long)_pred / (short/long)_gt )|
+    log_scale_error: float   # |log(bbox_diag_ratio)|
+
+
+def _sorted_extents(pts: np.ndarray) -> np.ndarray:
+    """bbox extents per axis, sorted descending: [long, mid, short]."""
+    ext = pts.max(axis=0) - pts.min(axis=0)
+    return np.sort(ext)[::-1]
+
+
+def compute_extent_metrics(pred_pts: np.ndarray, gt_pts: np.ndarray) -> ExtentMetrics:
+    """Relative-extent / aspect-ratio fidelity. Alignment-free (uses sorted extents)."""
+    eps = 1e-8
+    ep = _sorted_extents(pred_pts)
+    eg = _sorted_extents(gt_pts)
+    ratios = ep / np.maximum(eg, eps)
+    diag_p = float(np.linalg.norm(ep))
+    diag_g = float(np.linalg.norm(eg))
+    bbox_diag_ratio = diag_p / max(diag_g, eps)
+    aspect_p = ep[2] / max(ep[0], eps)
+    aspect_g = eg[2] / max(eg[0], eps)
+    aspect_error = abs(float(np.log(max(aspect_p, eps) / max(aspect_g, eps))))
+    log_scale_error = abs(float(np.log(max(bbox_diag_ratio, eps))))
+    return ExtentMetrics(
+        ext_ratio_long=float(ratios[0]),
+        ext_ratio_mid=float(ratios[1]),
+        ext_ratio_short=float(ratios[2]),
+        short_axis_ratio=float(ratios[2]),
+        bbox_diag_ratio=bbox_diag_ratio,
+        aspect_error=aspect_error,
+        log_scale_error=log_scale_error,
+    )
+
+
+def is_extent_collapse(
+    em: ExtentMetrics,
+    short_lo: float = 0.5,
+    short_hi: float = 2.0,
+    aspect_max: float = float(np.log(2.0)),
+) -> bool:
+    """Flag a degenerate extent collapse (a non-empty but wrongly-proportioned shape).
+
+    Faithful reconstructions keep each axis within ~2x of GT; empirical 1-step
+    collapses sit at 3-16x on the short axis. A factor-of-2 band separates them.
+    """
+    return (
+        em.short_axis_ratio < short_lo
+        or em.short_axis_ratio > short_hi
+        or em.aspect_error > aspect_max
+    )
+
+
+@dataclass
 class MeshQualityStats:
     """Mesh quality statistics for a single prediction."""
     vertex_count: int

@@ -29,11 +29,15 @@ class AlignmentResult:
     transform_4x4: np.ndarray       # (4, 4) homogeneous transform
     rotation: np.ndarray             # (3, 3) rotation matrix
     translation: np.ndarray          # (3,) translation
-    scale: float                     # uniform scale factor
+    scale: float                     # uniform scale factor APPLIED in the transform
     chamfer_cost: float              # alignment cost (bilateral CD after transform)
     initial_rotation_idx: int        # which of the 24 starts won
     n_icp_iterations: int            # actual iterations used
-    method: str                      # 'similarity_icp' or 'scale_only'
+    method: str                      # 'similarity_icp' | 'rigid_icp' | 'scale_only'
+    recovered_scale: float = 1.0     # DIAGNOSTIC: scale that WOULD best-fit pred->gt
+                                     #   after rigid align (never applied to CD). For
+                                     #   rigid mode this is the scale-fidelity signal;
+                                     #   for similarity mode it equals `scale`.
 
 
 def _rotation_matrix(axis: str, angle: float) -> np.ndarray:
@@ -104,10 +108,11 @@ def _similarity_icp(
     max_iterations: int = 100,
     tolerance: float = 1e-6,
     scale_clamp: tuple[float, float] = DEFAULT_SCALE_CLAMP,
+    solve_scale: bool = True,
 ) -> tuple[np.ndarray, np.ndarray, float, float, int]:
-    """Run similarity ICP (rotation + translation + uniform scale).
+    """Run ICP. solve_scale=True -> similarity (R,t,s, scale clamped per iter);
+    solve_scale=False -> rigid (R,t only, s=1, no scale solve or clamp).
 
-    Scale is clamped per iteration to prevent degenerate collapse.
     Cost uses one-directional source→target for speed, with final bilateral check.
 
     Returns:
@@ -127,14 +132,17 @@ def _similarity_icp(
     for it in range(max_iterations):
         dists, idx = target_tree.query(src)
         matched_target = target[idx]
-        R_step, t_step, s_step = _umeyama(src, matched_target, scale_clamp=scale_clamp)
+        R_step, t_step, s_step = _umeyama(
+            src, matched_target, scale_clamp=scale_clamp, solve_scale=solve_scale
+        )
 
-        # Clamp cumulative scale
-        new_s_acc = s_step * s_acc
-        if new_s_acc < s_min:
-            s_step = s_min / s_acc
-        elif new_s_acc > s_max:
-            s_step = s_max / s_acc
+        # Clamp cumulative scale (only relevant when solving scale)
+        if solve_scale:
+            new_s_acc = s_step * s_acc
+            if new_s_acc < s_min:
+                s_step = s_min / s_acc
+            elif new_s_acc > s_max:
+                s_step = s_max / s_acc
 
         src = s_step * (R_step @ src.T).T + t_step
 
@@ -160,8 +168,14 @@ def _umeyama(
     source: np.ndarray,
     target: np.ndarray,
     scale_clamp: tuple[float, float] = DEFAULT_SCALE_CLAMP,
+    solve_scale: bool = True,
 ) -> tuple[np.ndarray, np.ndarray, float]:
-    """Umeyama alignment: (R, t, s) minimizing ||target - (s*R*source + t)||^2."""
+    """Umeyama alignment: (R, t, s) minimizing ||target - (s*R*source + t)||^2.
+
+    If solve_scale=False the alignment is RIGID (s=1 fixed): rotation + translation
+    only, no scale solved or clamped. This is the scale-honest headline path — scale
+    must be a measured output, never absorbed by the alignment.
+    """
     mu_s = source.mean(axis=0)
     mu_t = target.mean(axis=0)
     src_c = source - mu_s
@@ -177,14 +191,32 @@ def _umeyama(
         S[2, 2] = -1
 
     R = U @ S @ Vt
-    s = np.trace(np.diag(D) @ S) / var_s if var_s > 1e-12 else 1.0
-
-    # Clamp per-step scale
-    s = max(scale_clamp[0], min(scale_clamp[1], s))
+    if solve_scale:
+        s = np.trace(np.diag(D) @ S) / var_s if var_s > 1e-12 else 1.0
+        # Clamp per-step scale
+        s = max(scale_clamp[0], min(scale_clamp[1], s))
+    else:
+        s = 1.0
 
     t = mu_t - s * (R @ mu_s)
 
     return R, t, s
+
+
+def recover_scale(aligned_pred: np.ndarray, gt_pts: np.ndarray) -> float:
+    """DIAGNOSTIC isotropic scale = RMS-radius(gt) / RMS-radius(aligned_pred).
+
+    The unclamped, correspondence-free scale that would best match the overall
+    spread of the rigidly-aligned prediction to GT. Reported as a scale-fidelity
+    signal; NEVER applied to the points used for CD/F-score.
+    """
+    p = aligned_pred - aligned_pred.mean(axis=0)
+    g = gt_pts - gt_pts.mean(axis=0)
+    rms_p = float(np.sqrt((p ** 2).sum(axis=1).mean()))
+    rms_g = float(np.sqrt((g ** 2).sum(axis=1).mean()))
+    if rms_p <= 1e-12:
+        return 1.0
+    return rms_g / rms_p
 
 
 def align_similarity_icp(
@@ -193,19 +225,26 @@ def align_similarity_icp(
     max_iterations: int = 100,
     n_initial_rotations: int = 24,
     scale_clamp: tuple[float, float] = DEFAULT_SCALE_CLAMP,
+    solve_scale: bool = True,
 ) -> AlignmentResult:
-    """Multi-start similarity ICP alignment (Track A).
+    """Multi-start ICP alignment (Track A).
+
+    solve_scale=True  -> similarity ICP (R, t, uniform scale; scale clamped).
+    solve_scale=False -> RIGID ICP (R, t only, s=1): the scale-honest headline
+        path. Scale is reported separately via `recovered_scale` (a diagnostic),
+        never absorbed into the alignment.
 
     Two-phase approach for performance:
     1. Coarse search: subsample to ~5K pts, try all 24 rotations
     2. Refinement: run ICP on the full dense cloud from the best start
 
     Args:
-        pred_pts: (N, 3) predicted point cloud (pre-normalized to unit sphere).
+        pred_pts: (N, 3) predicted point cloud (pre-normalized, same convention as GT).
         gt_pts: (M, 3) GT point cloud (in canonical frame).
         max_iterations: Max ICP iterations per start.
         n_initial_rotations: Number of initial rotations (24 for cube group).
-        scale_clamp: (min, max) bounds on uniform scale factor during ICP.
+        scale_clamp: (min, max) bounds on uniform scale factor during ICP (similarity only).
+        solve_scale: if False, rigid (R,t) alignment with s=1.
 
     Returns:
         AlignmentResult with best transform.
@@ -225,7 +264,8 @@ def align_similarity_icp(
     for idx, R_init in enumerate(rotations):
         rotated = (R_init @ pred_coarse.T).T
         R_icp, t_icp, s_icp, cost, _ = _similarity_icp(
-            rotated, gt_coarse, max_iterations=50, scale_clamp=scale_clamp
+            rotated, gt_coarse, max_iterations=50, scale_clamp=scale_clamp,
+            solve_scale=solve_scale,
         )
         R_total = R_icp @ R_init
         if np.linalg.det(R_total) < 0:
@@ -240,7 +280,8 @@ def align_similarity_icp(
     # Phase 2: Refine on full dense cloud from the best coarse start
     pred_init = best_coarse_s * (best_coarse_R @ pred_pts.T).T + best_coarse_t
     R_refine, t_refine, s_refine, cost_refine, n_iter = _similarity_icp(
-        pred_init, gt_pts, max_iterations=max_iterations, scale_clamp=scale_clamp
+        pred_init, gt_pts, max_iterations=max_iterations, scale_clamp=scale_clamp,
+        solve_scale=solve_scale,
     )
 
     # Compose: refine ∘ coarse
@@ -249,7 +290,9 @@ def align_similarity_icp(
     t_final = s_refine * (R_refine @ best_coarse_t) + t_refine
 
     # Clamp composed scale to prevent degenerate collapse across phases
-    s_final = max(scale_clamp[0], min(scale_clamp[1], s_final))
+    # (similarity only — in rigid mode s_final==1 and no clamp is applied).
+    if solve_scale:
+        s_final = max(scale_clamp[0], min(scale_clamp[1], s_final))
 
     if np.linalg.det(R_final) < 0:
         R_final = best_coarse_R
@@ -261,6 +304,10 @@ def align_similarity_icp(
     T[:3, :3] = s_final * R_final
     T[:3, 3] = t_final
 
+    # Recovered scale: applied scale in similarity mode; unclamped diagnostic in rigid mode.
+    aligned = (T[:3, :3] @ pred_pts.T).T + t_final
+    rec_scale = s_final if solve_scale else recover_scale(aligned, gt_pts)
+
     return AlignmentResult(
         transform_4x4=T,
         rotation=R_final,
@@ -269,7 +316,8 @@ def align_similarity_icp(
         chamfer_cost=cost_refine,
         initial_rotation_idx=best_coarse_idx,
         n_icp_iterations=n_iter,
-        method="similarity_icp",
+        method="similarity_icp" if solve_scale else "rigid_icp",
+        recovered_scale=rec_scale,
     )
 
 

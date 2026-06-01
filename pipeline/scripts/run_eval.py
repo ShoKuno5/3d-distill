@@ -47,7 +47,7 @@ from src.data.toys4k import (
     load_gt_pointcloud,
     save_sample_ids,
 )
-from src.geometry.normalize import normalize_to_unit_sphere, NormTransform
+from src.geometry.normalize import normalize_to_unit_sphere, normalize, NormTransform
 from src.geometry.cleaning import clean_mesh
 from src.geometry.sampling import sample_surface
 from src.geometry.alignment import (
@@ -57,6 +57,8 @@ from src.geometry.alignment import (
 )
 from src.evaluation.metrics import (
     compute_geometry_metrics,
+    compute_extent_metrics,
+    is_extent_collapse,
     compute_mesh_quality,
     bootstrap_ci,
     GeometryMetrics,
@@ -207,8 +209,10 @@ def evaluate_one(
         eval_pts = sample_surface(cleaned_mesh, n_eval_pts, seed=0)
         t_sample = time.time() - t_sample_start
 
-        # --- Normalize prediction ---
-        align_pts_norm, pred_transform = normalize_to_unit_sphere(align_pts)
+        # --- Normalize prediction (method must match GT; longest_axis for the
+        # scale-honest rework so pred lives in the same frame as the GT clouds) ---
+        norm_method = align_cfg.get("_norm_method", "unit_sphere")
+        align_pts_norm, pred_transform = normalize(align_pts, norm_method)
         eval_pts_norm = (eval_pts - pred_transform.center) / pred_transform.scale
 
         # Save sampled point cloud
@@ -217,9 +221,11 @@ def evaluate_one(
         # === Track A: Similarity ICP ===
         t_align_start = time.time()
         scale_clamp = align_cfg["track_a"].get("scale_clamp")
+        solve_scale = align_cfg["track_a"].get("solve_scale", True)
         icp_kwargs = dict(
             max_iterations=align_cfg["track_a"]["icp_max_iterations"],
             n_initial_rotations=align_cfg["track_a"]["initial_rotations"],
+            solve_scale=solve_scale,
         )
         if scale_clamp is not None:
             icp_kwargs["scale_clamp"] = tuple(scale_clamp)
@@ -232,6 +238,12 @@ def evaluate_one(
 
         # Apply alignment to eval points
         eval_pts_aligned = apply_alignment(eval_pts_norm, track_a_result)
+
+        # --- Extent / aspect fidelity (alignment-free, on normalized clouds) ---
+        # The scale-honest signal: rigid CD under-reports extent collapse, so we
+        # report it as a separate co-primary metric + a degeneracy failure flag.
+        extent = compute_extent_metrics(eval_pts_norm, gt_pts_norm)
+        extent_collapse = is_extent_collapse(extent)
 
         # Save alignment transform
         save_transform(
@@ -260,6 +272,13 @@ def evaluate_one(
             "alignment_cost": track_a_result.chamfer_cost,
             "alignment_scale": track_a_result.scale,
             "alignment_rot_idx": track_a_result.initial_rotation_idx,
+            "recovered_scale": track_a_result.recovered_scale,
+            "short_axis_ratio": extent.short_axis_ratio,
+            "ext_ratio_mid": extent.ext_ratio_mid,
+            "bbox_diag_ratio": extent.bbox_diag_ratio,
+            "aspect_error": extent.aspect_error,
+            "log_scale_error": extent.log_scale_error,
+            "extent_collapse": int(extent_collapse),
         }
         result["per_sample_rows"].append(row_a)
 
@@ -384,6 +403,14 @@ def main():
     align_cfg = cfg["alignment"]
     continue_on_failure = cfg.get("execution", {}).get("continue_on_failure", True)
 
+    # Normalization method (pred + GT must match). `method` preferred; falls back
+    # to legacy `gt_method`. Stash into align_cfg so the worker can read it.
+    norm_method = cfg.get("normalization", {}).get("method") \
+        or cfg.get("normalization", {}).get("gt_method", "unit_sphere")
+    align_cfg["_norm_method"] = norm_method
+    logger.info(f"Normalization method: {norm_method}; "
+                f"Track A solve_scale={align_cfg['track_a'].get('solve_scale', True)}")
+
     # CLI override: scale_clamp for Track A (fairness sensitivity runs)
     if args.scale_clamp_min is not None or args.scale_clamp_max is not None:
         current = align_cfg["track_a"].get("scale_clamp", [0.5, 2.0])
@@ -419,7 +446,7 @@ def main():
             logger.error(f"  Cannot load GT for {sid}: {e}")
             failure_rows.append({"object_id": sid, "category": cat, "model": "GT", "error": str(e)})
             continue
-        gt_pts_norm, gt_transform = normalize_to_unit_sphere(gt_pts_raw)
+        gt_pts_norm, gt_transform = normalize(gt_pts_raw, norm_method)
         t_gt = time.time() - t_gt_start
 
         # Cache GT canonical
@@ -527,6 +554,8 @@ def main():
         "chamfer_distance", "chamfer_pred_to_gt", "chamfer_gt_to_pred",
         "hausdorff", "f_score_001", "f_score_002",
         "alignment_cost", "alignment_scale", "alignment_rot_idx",
+        "recovered_scale", "short_axis_ratio", "ext_ratio_mid",
+        "bbox_diag_ratio", "aspect_error", "log_scale_error", "extent_collapse",
     ])
     logger.info(f"  Per-sample metrics: {per_sample_path} ({len(per_sample_rows)} rows)")
 
@@ -551,7 +580,8 @@ def main():
         logger.info(f"  No failures (cleared {failure_path})")
 
     # --- Summary ---
-    _write_summary(per_sample_rows, model_names, metrics_dir, cfg, logger)
+    _write_summary(per_sample_rows, model_names, metrics_dir, cfg, logger,
+                   n_manifest=len(gt_data))
 
     # --- Multiview rendering (for FD and CLIP-I) ---
     fd_cfg_check = cfg.get("metrics", {}).get("frechet_distance", {})
@@ -692,10 +722,21 @@ def _write_summary(
     metrics_dir: str,
     cfg: dict,
     logger: logging.Logger,
+    n_manifest: int | None = None,
 ) -> None:
-    """Compute and write summary statistics."""
+    """Compute and write summary statistics.
+
+    Reports median + p90/p95 (lead with median, not the outlier-dominated mean),
+    plus the scale-honest extent metrics (extent_collapse_rate, median
+    short_axis_ratio / recovered_scale). failure_rate is computed against the
+    full manifest (n_manifest), not the surviving rows (which was self-referential).
+    """
     metric_keys = [
         "chamfer_distance", "hausdorff", "f_score_001", "f_score_002",
+    ]
+    extent_keys = [
+        "short_axis_ratio", "bbox_diag_ratio", "recovered_scale",
+        "aspect_error", "log_scale_error",
     ]
     summary_rows = []
 
@@ -716,6 +757,8 @@ def _write_summary(
                 if len(vals) > 0:
                     row[f"{key}_mean"] = float(vals.mean())
                     row[f"{key}_median"] = float(np.median(vals))
+                    row[f"{key}_p90"] = float(np.percentile(vals, 90))
+                    row[f"{key}_p95"] = float(np.percentile(vals, 95))
                     row[f"{key}_std"] = float(vals.std())
 
                     # Bootstrap CI
@@ -729,11 +772,23 @@ def _write_summary(
                         row[f"{key}_ci95_lo"] = ci_lo
                         row[f"{key}_ci95_hi"] = ci_hi
 
-            # Failure stats
-            n_total = len(set(r["object_id"] for r in track_rows))
+            # Extent / aspect fidelity (Track A only carries these)
+            for key in extent_keys:
+                vals = np.array([r[key] for r in model_rows if r.get(key) is not None])
+                if len(vals) > 0:
+                    row[f"{key}_median"] = float(np.median(vals))
+                    row[f"{key}_p90"] = float(np.percentile(vals, 90))
+            collapse_vals = [r.get("extent_collapse") for r in model_rows
+                             if r.get("extent_collapse") is not None]
+            if collapse_vals:
+                row["n_extent_collapse"] = int(sum(int(v) for v in collapse_vals))
+                row["extent_collapse_rate"] = row["n_extent_collapse"] / len(collapse_vals)
+
+            # Failure stats — denominator = full manifest, NOT surviving rows.
+            denom = n_manifest if n_manifest else len(set(r["object_id"] for r in track_rows))
             n_success = len(model_rows)
-            row["n_failures"] = n_total - n_success
-            row["failure_rate"] = (n_total - n_success) / n_total if n_total > 0 else 0
+            row["n_failures"] = max(0, denom - n_success)
+            row["failure_rate"] = (denom - n_success) / denom if denom > 0 else 0
 
             summary_rows.append(row)
 
@@ -742,21 +797,29 @@ def _write_summary(
         _write_csv(summary_path, summary_rows, list(summary_rows[0].keys()))
         logger.info(f"  Summary: {summary_path}")
 
-        # Print summary table
-        print(f"\n{'='*80}")
-        print("SUMMARY — Track A (Similarity ICP Aligned)")
-        print(f"{'='*80}")
-        print(f"{'Model':<12} {'CD (x1e3)':<12} {'HD':<10} {'F@1%':<10} {'F@2%':<10} {'N':>5}")
-        print("-" * 60)
+        # Print summary table — lead with MEDIAN (+p90) and the extent-collapse
+        # rate (the scale-honest co-primary). Mean is shown but de-emphasized.
+        solve_scale = cfg.get("alignment", {}).get("track_a", {}).get("solve_scale", True)
+        label = "Similarity ICP" if solve_scale else "RIGID ICP (s=1)"
+        print(f"\n{'='*100}")
+        print(f"SUMMARY — Track A ({label}) — lead with median; CDx1e3")
+        print(f"{'='*100}")
+        print(f"{'Model':<14} {'CDmed':>8} {'CDp90':>8} {'CDmean':>8} {'F@1%med':>8} "
+              f"{'F@2%med':>8} {'collapse%':>9} {'shortAx_md':>10} {'N':>5}")
+        print("-" * 100)
         for r in summary_rows:
             if r["track"] != "A":
                 continue
-            cd = r.get("chamfer_distance_mean", float("nan"))
-            hd = r.get("hausdorff_mean", float("nan"))
-            f1 = r.get("f_score_001_mean", float("nan"))
-            f2 = r.get("f_score_002_mean", float("nan"))
+            cdm = r.get("chamfer_distance_median", float("nan")) * 1000
+            cdp90 = r.get("chamfer_distance_p90", float("nan")) * 1000
+            cdmean = r.get("chamfer_distance_mean", float("nan")) * 1000
+            f1 = r.get("f_score_001_median", float("nan"))
+            f2 = r.get("f_score_002_median", float("nan"))
+            coll = r.get("extent_collapse_rate", float("nan")) * 100
+            sax = r.get("short_axis_ratio_median", float("nan"))
             n = r["n_samples"]
-            print(f"{r['model']:<12} {cd*1000:<12.3f} {hd:<10.4f} {f1:<10.4f} {f2:<10.4f} {n:>5}")
+            print(f"{r['model']:<14} {cdm:>8.3f} {cdp90:>8.3f} {cdmean:>8.3f} {f1:>8.4f} "
+                  f"{f2:>8.4f} {coll:>9.1f} {sax:>10.3f} {n:>5}")
 
         track_b = [r for r in summary_rows if r["track"] == "B"]
         if track_b:

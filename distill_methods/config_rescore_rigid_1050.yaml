@@ -1,0 +1,118 @@
+# Scale-honest RE-SCORE of the existing 1050 cross-family predictions.
+# =====================================================================
+# NO new inference. Reads the meshes already on disk under
+#   m2_cd_tsubame_20260519_1629/eval_1050/predictions/<name>/default/
+# and re-scores them with longest-axis normalization + RIGID (s=1) alignment +
+# extent/aspect fidelity metrics + extent-collapse failure gate.
+# New metrics go to .../eval_1050_rigid/ so the old similarity numbers are kept.
+#
+# CPU only (mdtdist_uv). Run:
+#   $PY pipeline/scripts/run_eval.py --config <this> \
+#       --models teacher_50step flashvdm_dsw cd_4step dmd2_1step mdt_dist trellis2 \
+#       --skip-track-b --workers N
+
+dataset:
+  name: toys4k
+  root: /gs/fs/tga-koike-shanda2/sk/data/toys4k/official
+  manifest: /gs/fs/tga-koike-shanda2/sk/3d-distill/distill_methods/manifests/toys4k_eval_1000/test.csv
+  test_manifest: /gs/fs/tga-koike-shanda2/sk/3d-distill/distill_methods/manifests/toys4k_eval_1000/test.csv
+  max_samples: null
+  sample_ids_file: null
+  category_filter: null
+
+# Training block kept only for config-schema compatibility (unused for re-score).
+training:
+  training_data_dir: /gs/fs/tga-koike-shanda2/sk/scratch/distill_methods/m2_cd_tsubame_20260519_1629/training_data
+  batch_size: 4
+  num_workers: 4
+  seed: 42
+  bf16: true
+  model:
+    pretrained: tencent/Hunyuan3D-2.1
+    z_scale_factor: 1.0
+    lora: {rank: 64, alpha: 64, target_modules: [to_q, to_k, to_v, to_out.0]}
+
+# Explicit predictions_root for every model -> the EXISTING eval_1050 predictions.
+# (output_root below is the NEW rigid-metrics dir, so we must not let
+#  resolve_model_paths derive predictions_root from it.)
+models:
+  - name: teacher_50step
+    mesh_filename: mesh_raw.obj
+    predictions_root: /gs/fs/tga-koike-shanda2/sk/scratch/distill_methods/m2_cd_tsubame_20260519_1629/eval_1050/predictions/teacher_50step/default
+    inference_params: {num_inference_steps: 50, guidance_scale: 5.0, octree_resolution: 384}
+  - name: flashvdm_dsw
+    version: "2.0-turbo"   # honest label: this is Hunyuan3D-2.0-turbo, not 2.1
+    mesh_filename: mesh_raw.obj
+    predictions_root: /gs/fs/tga-koike-shanda2/sk/scratch/distill_methods/m2_cd_tsubame_20260519_1629/eval_1050/predictions/flashvdm_dsw/default
+    inference_params: {num_inference_steps: 5, octree_resolution: 380}
+  - name: cd_4step
+    method: cd
+    mesh_filename: mesh_raw.obj
+    predictions_root: /gs/fs/tga-koike-shanda2/sk/scratch/distill_methods/m2_cd_tsubame_20260519_1629/eval_1050/predictions/cd_4step/default
+    inference_params: {num_inference_steps: 4, guidance_scale: 1.0, octree_resolution: 384}
+  - name: dmd2_1step
+    method: dmd2
+    mesh_filename: mesh_raw.obj
+    predictions_root: /gs/fs/tga-koike-shanda2/sk/scratch/distill_methods/m2_cd_tsubame_20260519_1629/eval_1050/predictions/dmd2_1step/default
+    inference_params: {num_inference_steps: 1, guidance_scale: 1.0, octree_resolution: 384}
+  - name: mdt_dist
+    method: mdt_dist
+    mesh_filename: mesh_raw.obj
+    predictions_root: /gs/fs/tga-koike-shanda2/sk/scratch/distill_methods/m2_cd_tsubame_20260519_1629/eval_1050/predictions/mdt_dist/default
+    inference_params: {ss_steps: 2, slat_steps: 2}
+  - name: trellis2
+    method: trellis2
+    mesh_filename: mesh.obj
+    predictions_root: /gs/fs/tga-koike-shanda2/sk/scratch/distill_methods/m2_cd_tsubame_20260519_1629/eval_1050/predictions/trellis2/default
+    inference_params: {}
+
+seeds: [42]
+
+# NEW output dir — keeps the old similarity/unit-sphere metrics intact.
+output_root: /gs/fs/tga-koike-shanda2/sk/scratch/distill_methods/m2_cd_tsubame_20260519_1629/eval_1050_rigid
+
+# Scale-honest normalization: longest-axis (matches the GT convention).
+normalization:
+  method: longest_axis
+  gt_method: longest_axis
+  pred_method: longest_axis
+
+cleaning:
+  remove_nan: true
+  remove_inf: true
+  remove_degenerate_faces: true
+  remove_unreferenced_vertices: true
+  remove_tiny_components: true
+  tiny_component_threshold: 0.01
+
+sampling:
+  alignment_points: 100000
+  eval_points: 16384
+
+# RIGID (R,t, s=1) headline alignment — scale is a measured output, not absorbed.
+alignment:
+  track_a:
+    method: rigid_icp
+    solve_scale: false
+    initial_rotations: 24
+    icp_max_iterations: 100
+    allow_reflection: false
+  track_b:
+    method: scale_only
+    allow_rotation: false
+
+# Geometry-only; FD/CLIP/cross-modal need renders we are NOT regenerating -> OFF.
+metrics:
+  f_score:
+    thresholds: [0.01, 0.02]
+  hausdorff: true
+  mesh_quality_stats: true
+  bootstrap_ci: {enabled: true, n_bootstrap: 1000, confidence: 0.95}
+  frechet_distance: {enabled: false}
+  clip_image: {enabled: false}
+  cross_modal: {enabled: false}
+
+execution:
+  skip_existing: true
+  continue_on_failure: true
+  log_level: INFO
