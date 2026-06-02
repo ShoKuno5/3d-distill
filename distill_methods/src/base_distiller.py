@@ -110,6 +110,31 @@ def _enable_gradient_checkpointing(peft_model):
         )
 
 
+def _strip_for_deepcopy(module):
+    """Make ``module`` safe to ``copy.deepcopy``.
+
+    The gradient-checkpointing patch replaces ``inner.forward`` with a bound
+    method whose closure captures the whole PeftModel, and DMD methods register
+    forward hooks whose callables capture the distiller. deepcopy would recurse
+    into those captured objects and fail (e.g. ``AttributeError: 'HunYuanDiTPlain'
+    object has no attribute '_parameters'`` mid-reconstruction). On resume the
+    old student is discarded right after the copy, so stripping it in place is
+    safe; the fresh student re-establishes GC + hooks after the reload.
+    """
+    for m in module.modules():
+        # Undo the GC forward monkey-patch (instance-level attribute).
+        if "forward" in vars(m):
+            del m.__dict__["forward"]
+        m.__dict__.pop("_gc_enabled", None)
+        # Drop all hooks (their callables capture the distiller / peft_model).
+        for attr in ("_forward_hooks", "_forward_pre_hooks", "_backward_hooks",
+                     "_backward_pre_hooks", "_forward_hooks_with_kwargs",
+                     "_forward_pre_hooks_with_kwargs"):
+            d = getattr(m, attr, None)
+            if isinstance(d, dict):
+                d.clear()
+
+
 def _make_adapter_restore_wrapper(peft_model):
     """Return (capture_adapter, restore_in_run) helpers shared by the
     arch-specific patches. Captures the active adapter at the moment of
@@ -661,7 +686,13 @@ class BaseDistiller:
 
         model = self.student.module if self.is_distributed else self.student
         if isinstance(model, PeftModel):
-            base = copy.deepcopy(model.base_model.model)
+            inner = model.base_model.model
+            # Strip the GC forward monkey-patch + hooks so deepcopy doesn't
+            # recurse into the captured PeftModel/distiller and crash. The old
+            # student is discarded right after; GC + hooks are re-established
+            # on the rebuilt student below.
+            _strip_for_deepcopy(inner)
+            base = copy.deepcopy(inner)
         else:
             base = model
         self.student = PeftModel.from_pretrained(base, path, is_trainable=True)
