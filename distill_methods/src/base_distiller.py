@@ -110,6 +110,31 @@ def _enable_gradient_checkpointing(peft_model):
         )
 
 
+def _strip_for_deepcopy(module):
+    """Make ``module`` safe to ``copy.deepcopy``.
+
+    The gradient-checkpointing patch replaces ``inner.forward`` with a bound
+    method whose closure captures the whole PeftModel, and DMD methods register
+    forward hooks whose callables capture the distiller. deepcopy would recurse
+    into those captured objects and fail (e.g. ``AttributeError: 'HunYuanDiTPlain'
+    object has no attribute '_parameters'`` mid-reconstruction). On resume the
+    old student is discarded right after the copy, so stripping it in place is
+    safe; the fresh student re-establishes GC + hooks after the reload.
+    """
+    for m in module.modules():
+        # Undo the GC forward monkey-patch (instance-level attribute).
+        if "forward" in vars(m):
+            del m.__dict__["forward"]
+        m.__dict__.pop("_gc_enabled", None)
+        # Drop all hooks (their callables capture the distiller / peft_model).
+        for attr in ("_forward_hooks", "_forward_pre_hooks", "_backward_hooks",
+                     "_backward_pre_hooks", "_forward_hooks_with_kwargs",
+                     "_forward_pre_hooks_with_kwargs"):
+            d = getattr(m, attr, None)
+            if isinstance(d, dict):
+                d.clear()
+
+
 def _make_adapter_restore_wrapper(peft_model):
     """Return (capture_adapter, restore_in_run) helpers shared by the
     arch-specific patches. Captures the active adapter at the moment of
@@ -573,7 +598,10 @@ class BaseDistiller:
         self._init_wandb()
 
         step = resume_step
-        epoch = 0
+        # Resume the data-ordering epoch from the checkpoint step so the sampler
+        # permutation continues roughly where it left off, instead of re-walking
+        # epoch 0 (which over-revisits early data on every resume segment).
+        epoch = resume_step // max(1, len(dataloader))
         log_interval = self.config["training"]["log_interval"]
         save_interval = self.config["training"]["save_interval"]
         grad_clip = self.config["training"]["gradient_clip"]
@@ -661,10 +689,30 @@ class BaseDistiller:
 
         model = self.student.module if self.is_distributed else self.student
         if isinstance(model, PeftModel):
-            base = copy.deepcopy(model.base_model.model)
+            inner = model.base_model.model
+            # Strip the GC forward monkey-patch + hooks so deepcopy doesn't
+            # recurse into the captured PeftModel/distiller and crash. The old
+            # student is discarded right after; GC + hooks are re-established
+            # on the rebuilt student below.
+            _strip_for_deepcopy(inner)
+            base = copy.deepcopy(inner)
         else:
             base = model
         self.student = PeftModel.from_pretrained(base, path, is_trainable=True)
+        # C1 fix: rebuild EMA against the REBUILT student, BEFORE extra adapters,
+        # mirroring __init__'s ordering. self.ema (from __init__) is bound by
+        # name+shadow-buffer to the discarded pre-resume module; load_state_dict
+        # into a stale-mapped LitEma is only correct by PEFT-name coincidence and
+        # breaks under any config / trainable-set drift. Rebuilding here (while
+        # only the default adapter exists, so fake_score is NOT tracked) makes
+        # the subsequent ema.pt load robust for long multi-segment resume runs.
+        ema_cfg = self.config["training"]["model"]["ema"]
+        self.ema = _load_ema(
+            self.student,
+            decay=ema_cfg["decay"],
+            use_num_updates=ema_cfg.get("use_num_updates", True),
+        )
+        self.ema.to(self.device)
         # Re-register extra adapters (fake_score) on the rebuilt student
         # before DDP wrap, mirroring __init__'s ordering.
         self._add_extra_adapters()
