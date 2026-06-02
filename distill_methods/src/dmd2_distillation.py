@@ -48,6 +48,38 @@ class FeatureDiscriminator(nn.Module):
         return self.mlp(pooled)
 
 
+class AttnPoolDiscriminator(nn.Module):
+    """Discriminator with learned attention pooling over the VecSet tokens.
+
+    Ablation for 論点 1: mean-pooling over the 4096 VecSet tokens discards the
+    spatial/token structure (official DMD2 uses a conv head on the fake-UNet
+    bottleneck). This keeps the token dimension via a single-query attention
+    pool before the MLP head, so the discriminator can attend to discriminative
+    tokens instead of averaging them away.
+    """
+
+    def __init__(self, feature_dim: int, hidden_dim: int = 1024, n_heads: int = 8):
+        super().__init__()
+        self.query = nn.Parameter(torch.randn(1, 1, feature_dim) * 0.02)
+        self.attn = nn.MultiheadAttention(feature_dim, n_heads, batch_first=True)
+        self.norm = nn.LayerNorm(feature_dim)
+        self.mlp = nn.Sequential(
+            nn.Linear(feature_dim, hidden_dim),
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Linear(hidden_dim, 1),
+        )
+
+    def forward(self, features: torch.Tensor) -> torch.Tensor:
+        """features: [B, N, D] -> [B, 1]"""
+        B = features.shape[0]
+        q = self.query.expand(B, -1, -1)            # [B, 1, D]
+        pooled, _ = self.attn(q, features, features)  # [B, 1, D]
+        pooled = self.norm(pooled.squeeze(1))        # [B, D]
+        return self.mlp(pooled)
+
+
 class ReplayBuffer:
     """Fixed-size ring buffer storing (latent, image_cond) pairs for GAN training."""
 
@@ -90,6 +122,18 @@ class DMD2Distillation(DMD1Distillation):
         self.num_inference_steps = dmd2_cfg.get("num_inference_steps", 1)
         self.d_update_ratio = dmd2_cfg["d_update_ratio"]
 
+        # --- Phase-1 ablation knobs (defaults reproduce current behavior) ---
+        # DMD-only warmup: enable the GAN (D update + generator GAN loss) only
+        # after this many steps. Official DMD2 pretrains DMD-only then adds GAN.
+        self.gan_warmup_steps = dmd2_cfg.get("gan_warmup_steps", 0)
+        # Fake-score update: "double" = current (separate DSM step + D-loss step,
+        # two optimizer_fake.step()/iter); "single" = official (one combined loss
+        # loss_fake + gan_cls_weight * cls_loss, single optimizer_fake.step()).
+        self.fake_score_update_mode = dmd2_cfg.get("fake_score_update_mode", "double")
+        self.gan_cls_weight = dmd2_cfg.get("gan_cls_weight", 1.0)
+        # Discriminator architecture: "mean_pool_mlp" (current) or "attn_pool" (論点1).
+        self.discriminator_type = dmd2_cfg.get("discriminator_type", "mean_pool_mlp")
+
         # fake_score_adapter was created by inherited _add_extra_adapters()
         # during BaseDistiller.__init__, before DDP wrap.
 
@@ -97,9 +141,13 @@ class DMD2Distillation(DMD1Distillation):
         # DiT hidden dim: determined from the model config
         dit_model = self.teacher
         feature_dim = getattr(dit_model, "hidden_size", 1024)
-        self.discriminator = FeatureDiscriminator(feature_dim).to(self.device)
+        if self.discriminator_type == "attn_pool":
+            self.discriminator = AttnPoolDiscriminator(feature_dim).to(self.device)
+        else:
+            self.discriminator = FeatureDiscriminator(feature_dim).to(self.device)
         logger.info(
-            "Discriminator: %.2fM params (feature_dim=%d)",
+            "Discriminator[%s]: %.2fM params (feature_dim=%d)",
+            self.discriminator_type,
             sum(p.numel() for p in self.discriminator.parameters()) / 1e6,
             feature_dim,
         )
@@ -304,6 +352,92 @@ class DMD2Distillation(DMD1Distillation):
 
         return loss_d.detach()
 
+    def _train_fake_score_and_d_combined(self, batch: dict):
+        """Official-style SINGLE guidance update (fake_score_update_mode='single').
+
+        The guidance network (fake_score) is updated ONCE with the combined loss
+        `loss_fake (DSM) + gan_cls_weight * loss_d (classification)`, instead of two
+        separate full-weight optimizer_fake.step() calls (the impl's 'double' mode).
+        The discriminator is updated at full rate.
+
+        Implementation: two backward passes accumulate into the same .grad buffers
+        (no zero_grad between), then a single optimizer_fake.step()/optimizer_d.step().
+        Doing DSM backward first frees its graph before the D forwards, keeping peak
+        memory ~ a single phase rather than the sum.
+        """
+        x_data = batch["latent"]
+        image_cond = batch["image_cond"]
+        B = x_data.shape[0]
+        contexts_fake = {"main": image_cond}
+
+        # x_fake from student (no grad to student here)
+        noise = torch.randn_like(x_data)
+        with torch.no_grad():
+            self.fake_score_adapter.activate_student()
+            x_fake = self._student_generate(noise, contexts_fake)
+
+        self.fake_score_adapter.activate_fake_score()
+        self.optimizer_fake.zero_grad()
+        self.optimizer_d.zero_grad()
+
+        # --- DSM term: backward first so its graph frees before the D forwards ---
+        t_probe = self.sample_t(B, self.device)
+        eps = torch.randn_like(x_fake)
+        x_noised = self.diffuse(x_fake, t_probe, eps)
+        with torch.autocast("cuda", dtype=torch.bfloat16):
+            v_fake_dsm = self.student_forward(x_noised, t_probe, contexts_fake)
+        v_target = self.get_velocity(x_fake, eps)
+        loss_fake = nn.functional.mse_loss(v_fake_dsm.float(), v_target.float().detach())
+        loss_fake.backward()  # accumulates DSM grad into fake_score; frees this graph
+
+        # --- GAN classification term: D on fake_score features (real vs fake) ---
+        x_real, cond_real = self.replay_buffer.sample(B, self.device)
+        contexts_real = {"main": cond_real}
+        t_d = self.sample_t(B, self.device)
+        with torch.autocast("cuda", dtype=torch.bfloat16):
+            self.student_forward(
+                self.diffuse(x_real, t_d, torch.randn_like(x_real)), t_d, contexts_real,
+            )
+        feat_real = self._features.get("student")
+        with torch.autocast("cuda", dtype=torch.bfloat16):
+            self.student_forward(
+                self.diffuse(x_fake.detach(), t_d, torch.randn_like(x_fake)), t_d, contexts_fake,
+            )
+        feat_fake = self._features.get("student")
+        self.fake_score_adapter.activate_student()
+
+        if feat_real is None or feat_fake is None:
+            logger.warning("Feature hook failed in combined update; DSM-only step")
+            self._sync_grads(self.fake_score_adapter.fake_score_params())
+            torch.nn.utils.clip_grad_norm_(
+                self.fake_score_adapter.fake_score_params(),
+                self.config["training"]["gradient_clip"])
+            self.optimizer_fake.step()
+            return loss_fake.detach(), torch.tensor(0.0, device=self.device)
+
+        d_real = self.discriminator(feat_real.float())
+        d_fake = self.discriminator(feat_fake.float())
+        loss_d = (nn.functional.softplus(-d_real).mean()
+                  + nn.functional.softplus(d_fake).mean())
+        # cls grad accumulates into fake_score (at weight gan_cls_weight) AND into D.
+        (self.gan_cls_weight * loss_d).backward()
+
+        # D was scaled by gan_cls_weight via the loss; rescale its grads to full rate
+        # so the discriminator trains at its own lr (TTUR), not 100x slower.
+        if self.gan_cls_weight > 0:
+            for p in self.discriminator.parameters():
+                if p.grad is not None:
+                    p.grad.mul_(1.0 / self.gan_cls_weight)
+
+        self._sync_grads(self.discriminator.parameters())
+        self._sync_grads(self.fake_score_adapter.fake_score_params())
+        torch.nn.utils.clip_grad_norm_(
+            self.fake_score_adapter.fake_score_params(),
+            self.config["training"]["gradient_clip"])
+        self.optimizer_d.step()
+        self.optimizer_fake.step()
+        return loss_fake.detach(), loss_d.detach()
+
     # ------------------------------------------------------------------
     # Training step (overrides DMD1)
     # ------------------------------------------------------------------
@@ -335,11 +469,24 @@ class DMD2Distillation(DMD1Distillation):
         no_sync = self.student.no_sync if self.is_distributed else nullcontext
         loss_fake = torch.tensor(0.0, device=self.device)
         loss_d = torch.tensor(0.0, device=self.device)
+        # GAN is active only after DMD-only warmup, once the replay buffer is
+        # filled, AND when lambda_gan > 0. lambda_gan == 0 is a clean GAN-off
+        # ablation: no D update, no generator GAN loss -> pure DMD distribution
+        # matching (fake-score DSM + KL), no wasted discriminator compute and no
+        # dependency on DMD1 regression pairs.
+        gan_active = (step >= self.gan_warmup_steps
+                      and len(self.replay_buffer) >= batch_size
+                      and self.lambda_gan > 0)
         for _ in range(self.d_update_ratio):
             with no_sync():
-                loss_fake = self._train_fake_score(batch)
-                if len(self.replay_buffer) >= batch_size:
-                    loss_d = self._train_discriminator(batch)
+                if self.fake_score_update_mode == "single" and gan_active:
+                    # Official: one combined guidance loss (DSM + cls_wt * GAN-cls),
+                    # single optimizer_fake.step() (+ D step). Single backward.
+                    loss_fake, loss_d = self._train_fake_score_and_d_combined(batch)
+                else:
+                    loss_fake = self._train_fake_score(batch)
+                    if gan_active:
+                        loss_d = self._train_discriminator(batch)
 
         # --- Phase 3: Update student (KL + GAN) ---
         # Wrap the whole phase in no_sync. DDP arms the reducer inside
@@ -402,8 +549,10 @@ class DMD2Distillation(DMD1Distillation):
 
         # GAN generator loss — features from mu_fake on noised x_gen
         # Paper: generator minimizes -log(D(feat)) (non-saturating)
+        # Gated on gan_active (post-warmup + replay filled) so DMD-only warmup
+        # truly excludes the GAN from the student objective.
         loss_gan = torch.tensor(0.0, device=self.device)
-        if len(self.replay_buffer) >= batch_size:
+        if gan_active:
             t_gan = self.sample_t(B, self.device)
             noise_gan = torch.randn_like(x_gen)
             x_gen_noised_gan = self.diffuse(x_gen, t_gan, noise_gan)
