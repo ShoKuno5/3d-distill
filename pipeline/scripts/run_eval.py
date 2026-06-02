@@ -194,7 +194,8 @@ def evaluate_one(
         # Save cleaned mesh
         norm_pred_dir = os.path.join(output_root, "normalized_predictions", model_name, sid)
         os.makedirs(norm_pred_dir, exist_ok=True)
-        cleaned_mesh.export(os.path.join(norm_pred_dir, "mesh_cleaned.obj"))
+        if align_cfg.get("_save_normalized", True):
+            cleaned_mesh.export(os.path.join(norm_pred_dir, "mesh_cleaned.obj"))
 
         # --- Mesh quality stats ---
         mq = compute_mesh_quality(cleaned_mesh)
@@ -216,7 +217,8 @@ def evaluate_one(
         eval_pts_norm = (eval_pts - pred_transform.center) / pred_transform.scale
 
         # Save sampled point cloud
-        save_pointcloud(eval_pts_norm, os.path.join(norm_pred_dir, "eval_pts.npz"))
+        if align_cfg.get("_save_normalized", True):
+            save_pointcloud(eval_pts_norm, os.path.join(norm_pred_dir, "eval_pts.npz"))
 
         # === Track A: Similarity ICP ===
         t_align_start = time.time()
@@ -408,6 +410,11 @@ def main():
     norm_method = cfg.get("normalization", {}).get("method") \
         or cfg.get("normalization", {}).get("gt_method", "unit_sphere")
     align_cfg["_norm_method"] = norm_method
+    # When false (re-score / metrics-only runs), skip writing the per-sample
+    # cleaned mesh + sampled point clouds (regenerable intermediates that can
+    # reach hundreds of GB over 1000s of samples and fill the volume). The
+    # metrics CSVs are the product; default True preserves prior behavior.
+    align_cfg["_save_normalized"] = cfg.get("execution", {}).get("save_normalized", True)
     logger.info(f"Normalization method: {norm_method}; "
                 f"Track A solve_scale={align_cfg['track_a'].get('solve_scale', True)}")
 
@@ -451,7 +458,8 @@ def main():
 
         # Cache GT canonical
         gt_cache_path = os.path.join(output_root, "cache", "gt_canonical", f"{sid}.npz")
-        save_pointcloud(gt_pts_norm, gt_cache_path)
+        if align_cfg.get("_save_normalized", True):
+            save_pointcloud(gt_pts_norm, gt_cache_path)
 
         gt_data[sid] = gt_pts_norm
         logger.info(f"GT {sid}: {gt_pts_norm.shape[0]} pts ({t_gt:.2f}s)")

@@ -116,3 +116,4 @@ execution:
   skip_existing: true
   continue_on_failure: true
   log_level: INFO
+  save_normalized: false   # metrics-only re-score: don't write 239GB of cleaned meshes/point clouds
