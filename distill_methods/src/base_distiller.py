@@ -598,7 +598,10 @@ class BaseDistiller:
         self._init_wandb()
 
         step = resume_step
-        epoch = 0
+        # Resume the data-ordering epoch from the checkpoint step so the sampler
+        # permutation continues roughly where it left off, instead of re-walking
+        # epoch 0 (which over-revisits early data on every resume segment).
+        epoch = resume_step // max(1, len(dataloader))
         log_interval = self.config["training"]["log_interval"]
         save_interval = self.config["training"]["save_interval"]
         grad_clip = self.config["training"]["gradient_clip"]
